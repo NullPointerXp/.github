@@ -8,7 +8,7 @@ O **SIAES** (Sistema Integrado de Atendimento e Execução de Serviços) é uma 
 
 ## Arquitetura
 
-![Diagrama de Arquitetura](arch.png)
+![Diagrama de Arquitetura](arch-2.png)
 
 ## Repositórios
 
