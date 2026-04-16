@@ -67,54 +67,24 @@ graph TB
 
 ### Visão do Fluxo de Requisição
 
-```mermaid
-graph LR
-    Client(("🌐 Cliente"))
-
-    subgraph ALB["ALB Internet-Facing (siaes-gateway)"]
-        direction TB
-        R1["/customer-api/*"]
-        R2["/order-api/*"]
-        R3["/inventory-api/*"]
-    end
-
-    subgraph EKS["EKS Cluster"]
-        direction TB
-        CS["customer<br/>:8081"]
-        OS["order<br/>:8083"]
-        IS["inventory<br/>:8082"]
-    end
-
-    subgraph RDS["RDS PostgreSQL"]
-        direction TB
-        DB1[("siaes_customers")]
-        DB2[("siaes_orders")]
-        DB3[("siaes_inventory")]
-    end
-
-    Client -->|"HTTP :80"| ALB
-
-    R1 --> CS
-    R2 --> OS
-    R3 --> IS
-
-    OS -.->|"Feign + JWT"| CS
-    OS -.->|"Feign + JWT"| IS
-
-    CS --> DB1
-    OS --> DB2
-    IS --> DB3
-
-    style Client fill:#232F3E,color:#fff,stroke:#FF9900
-    style ALB fill:#FF9900,color:#fff
-    style EKS fill:#326CE5,color:#fff
-    style RDS fill:#3B48CC,color:#fff
-    style CS fill:#6DB33F,color:#fff
-    style OS fill:#6DB33F,color:#fff
-    style IS fill:#6DB33F,color:#fff
-    style DB1 fill:#336791,color:#fff
-    style DB2 fill:#336791,color:#fff
-    style DB3 fill:#336791,color:#fff
+```
+                                        ┌──────────────────────┐     ┌─────────────────────┐
+                                   ┌───>│  customer-microservice│────>│  RDS siaes_customers │
+                                   │    │  /customer-api  :8081 │     └─────────────────────┘
+                                   │    └──────────────────────┘
+                                   │              ^
+┌────────┐    ┌──────────────────┐ │              │ Feign
+│ Cliente │───>│  ALB siaes-gateway│─┤              │ + JWT
+└────────┘    │  (internet-facing)│ │    ┌──────────────────────┐     ┌─────────────────────┐
+              └──────────────────┘ ├───>│  order-microservice   │────>│  RDS siaes_orders    │
+                                   │    │  /order-api     :8083 │     └─────────────────────┘
+                                   │    └──────────────────────┘
+                                   │              │ Feign
+                                   │              v + JWT
+                                   │    ┌──────────────────────┐     ┌─────────────────────┐
+                                   └───>│  inventory-microservice────>│  RDS siaes_inventory │
+                                        │  /inventory-api :8082 │     └─────────────────────┘
+                                        └──────────────────────┘
 ```
 
 ### Mudanças da Fase 3 para Fase 4
