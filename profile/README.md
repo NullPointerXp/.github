@@ -8,27 +8,174 @@ O **SIAES** (Sistema Integrado de Atendimento e Execução de Serviços) é uma 
 
 ## Arquitetura
 
-![Diagrama de Arquitetura](arch-2.png)
+### Visão da Infraestrutura AWS
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│  AWS Cloud                                                                                  │
+│                                                                                             │
+│  ┌──────────────┐    ┌───────┐    ┌──────────────────┐                                      │
+│  │ GitHub Actions│───>│ SonarCloud───>│  ECR (3 repos)   │                                      │
+│  └──────────────┘    └───────┘    └──────────────────┘                                      │
+│         │                                                                        ┌─────────┐│
+│         │  terraform apply                                                       │ Datadog ││
+│         v                                                                        └─────────┘│
+│  ┌──────────────┐                                                                           │
+│  │ S3 Terraform │                                                                           │
+│  │   Backend    │                                                                           │
+│  └──────────────┘                                                                           │
+│                                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │  VPC                                                                                   │ │
+│  │                                                                                        │ │
+│  │  ┌──────────────────────────────────────┐  ┌─────────────────────────────────────────┐  │ │
+│  │  │  Public Subnets                      │  │  Private Subnets                        │  │ │
+│  │  │                                      │  │                                         │  │ │
+│  │  │  ┌────────────────┐  ┌────────────┐  │  │  ┌───────────────────────────────────┐  │  │ │
+│  │  │  │ Internet       │  │ NAT        │  │  │  │  EKS Cluster                      │  │  │ │
+│  │  │  │ Gateway        │  │ Gateway    │──│──│─>│                                   │  │  │ │
+│  │  │  └───────┬────────┘  └────────────┘  │  │  │  ┌─────────┐ ┌────────┐ ┌──────┐ │  │  │ │
+│  │  │          │                           │  │  │  │customer │ │ order  │ │inven.│ │  │  │ │
+│  │  │  ┌───────v────────────────────────┐  │  │  │  │  pod    │ │  pod   │ │ pod  │ │  │  │ │
+│  │  │  │ ALB Internet-Facing            │  │  │  │  │  :8081  │ │  :8083 │ │ :8082│ │  │  │ │
+│  │  │  │ (siaes-gateway)                │──│──│─>│  └────┬────┘ └───┬────┘ └──┬───┘ │  │  │ │
+│  │  │  │                                │  │  │  │       │          │          │     │  │  │ │
+│  │  │  │  /customer-api/*  ─> :8081     │  │  │  └───────│──────────│──────────│─────┘  │  │ │
+│  │  │  │  /order-api/*     ─> :8083     │  │  │          │          │          │        │  │ │
+│  │  │  │  /inventory-api/* ─> :8082     │  │  │  ┌───────v──┐ ┌────v─────┐ ┌──v──────┐ │  │ │
+│  │  │  └────────────────────────────────┘  │  │  │   RDS    │ │   RDS    │ │   RDS   │ │  │ │
+│  │  │                                      │  │  │customers │ │ orders   │ │inventory│ │  │ │
+│  │  └──────────────────────────────────────┘  │  └──────────┘ └──────────┘ └─────────┘ │  │ │
+│  │                                            │                                         │  │ │
+│  │                                            └─────────────────────────────────────────┘  │ │
+│  └─────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                             │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+         ^
+         │  HTTP :80
+    ┌────┴────┐
+    │ Cliente │
+    └─────────┘
+```
+
+### Visão Detalhada dos Componentes
+
+```mermaid
+graph TB
+    subgraph Internet
+        Client[Cliente / Browser]
+    end
+
+    subgraph AWS
+        subgraph VPC
+            subgraph Public Subnets
+                ALB["ALB Internet-Facing<br/>(siaes-gateway)"]
+            end
+
+            subgraph Private Subnets
+                subgraph EKS Cluster
+                    direction TB
+
+                    subgraph customer-pod["customer-microservice"]
+                        CS["/customer-api<br/>:8081"]
+                    end
+
+                    subgraph order-pod["order-microservice"]
+                        OS["/order-api<br/>:8083"]
+                    end
+
+                    subgraph inventory-pod["inventory-microservice"]
+                        IS["/inventory-api<br/>:8082"]
+                    end
+                end
+
+                RDS_C["RDS PostgreSQL<br/>siaes_customers"]
+                RDS_O["RDS PostgreSQL<br/>siaes_orders"]
+                RDS_I["RDS PostgreSQL<br/>siaes_inventory"]
+            end
+        end
+    end
+
+    Client -->|"HTTP :80"| ALB
+    ALB -->|"/customer-api/*"| CS
+    ALB -->|"/order-api/*"| OS
+    ALB -->|"/inventory-api/*"| IS
+
+    OS -->|"Feign HTTP"| CS
+    OS -->|"Feign HTTP"| IS
+
+    CS --- RDS_C
+    OS --- RDS_O
+    IS --- RDS_I
+
+    style ALB fill:#FF9900,color:#fff
+    style CS fill:#6DB33F,color:#fff
+    style OS fill:#6DB33F,color:#fff
+    style IS fill:#6DB33F,color:#fff
+    style RDS_C fill:#3B48CC,color:#fff
+    style RDS_O fill:#3B48CC,color:#fff
+    style RDS_I fill:#3B48CC,color:#fff
+```
+
+### Visão do Fluxo de Requisição
+
+```
+                                        ┌──────────────────────┐     ┌─────────────────────┐
+                                   ┌───>│  customer-microservice│────>│  RDS siaes_customers │
+                                   │    │  /customer-api  :8081 │     └─────────────────────┘
+                                   │    └──────────────────────┘
+                                   │              ^
+┌────────┐    ┌──────────────────┐ │              │ Feign
+│ Cliente │───>│  ALB siaes-gateway│─┤              │ + JWT
+└────────┘    │  (internet-facing)│ │    ┌──────────────────────┐     ┌─────────────────────┐
+              └──────────────────┘ ├───>│  order-microservice   │────>│  RDS siaes_orders    │
+                                   │    │  /order-api     :8083 │     └─────────────────────┘
+                                   │    └──────────────────────┘
+                                   │              │ Feign
+                                   │              v + JWT
+                                   │    ┌──────────────────────┐     ┌─────────────────────┐
+                                   └───>│  inventory-microservice────>│  RDS siaes_inventory │
+                                        │  /inventory-api :8082 │     └─────────────────────┘
+                                        └──────────────────────┘
+```
+
+### Mudanças da Fase 3 para Fase 4
+
+| Aspecto | Fase 3 (Monolito) | Fase 4 (Microserviços) |
+|---|---|---|
+| **Aplicação** | Monolito `app-siaes` | 3 microserviços independentes |
+| **Banco de Dados** | RDS compartilhado | 1 RDS por microserviço (database-per-service) |
+| **Autenticação** | Lambda Auth + API Gateway | Spring Security + JWT direto no ALB |
+| **Exposição** | ALB interno + API Gateway + VPC Link | ALB internet-facing unificado |
+| **Roteamento** | API Gateway com Lambda Authorizer | Kubernetes Ingress Group por context path |
+| **Comunicação interna** | N/A (monolito) | OpenFeign com propagação de JWT |
 
 ## Repositórios
 
 | Repositório | Descrição | Stack |
 |---|---|---|
 | [`infra-app`](https://github.com/NullPointerXp/infra-app) | Infraestrutura base — VPC, EKS, ECR, ALB Controller | Terraform, AWS |
-| [`infra-db`](https://github.com/NullPointerXp/infra-db) | Banco de dados — RDS PostgreSQL | Terraform, AWS |
-| [`app-siaes`](https://github.com/NullPointerXp/app-siaes) | Aplicação principal — API REST de ordens de serviço | Java 21, Spring Boot, K8s |
-| [`lambda-auth`](https://github.com/NullPointerXp/lambda-auth) | Autenticação — JWT Authorizer + API Gateway | Java 17, AWS Lambda, Terraform |
+| [`infra-db`](https://github.com/NullPointerXp/infra-db) | Banco de dados — RDS PostgreSQL (1 por microserviço) | Terraform, AWS |
+| [`customer-microservice`](https://github.com/NullPointerXp/customer-microservice) | Gestão de usuários, veículos e autenticação JWT | Java 21, Spring Boot, K8s |
+| [`order-microservice`](https://github.com/NullPointerXp/order-microservice) | Ordens de serviço, atividades e aprovação por email | Java 21, Spring Boot, K8s |
+| [`inventory-microservice`](https://github.com/NullPointerXp/inventory-microservice) | Estoque, peças, mão de obra e movimentações | Java 21, Spring Boot, K8s |
+| [`k8s`](https://github.com/NullPointerXp/k8s) | Templates Kubernetes — Deployment, Service, Ingress, ConfigMap, HPA | Kubernetes YAML |
+| [`github-action`](https://github.com/NullPointerXp/github-action) | Workflows reutilizáveis de CI/CD (Terraform + EKS deploy) | GitHub Actions |
+| [`terraform-modules`](https://github.com/NullPointerXp/terraform-modules) | Módulos Terraform reutilizáveis (RDS, ECR, etc.) | Terraform |
+
+> **Repositórios descontinuados na Fase 4:** [`app-siaes`](https://github.com/NullPointerXp/app-siaes) (monolito) e [`lambda-auth`](https://github.com/NullPointerXp/lambda-auth) (Lambda + API Gateway).
 
 ## Tech Stack
 
 | Camada | Tecnologias |
 |---|---|
-| **Aplicação** | Java 21, Spring Boot 3.5, Spring Security, JPA/Hibernate |
-| **Autenticação** | AWS Lambda (Java 17), JWT (HMAC256), API Gateway HTTP API |
-| **Banco de Dados** | PostgreSQL 15 (RDS) |
-| **Infraestrutura** | Terraform, AWS EKS, VPC, ECR, ALB, NAT Gateway |
+| **Aplicação** | Java 21, Spring Boot 3.5, Spring Security, JPA/Hibernate, OpenFeign |
+| **Autenticação** | JWT (HMAC256) via Spring Security em cada microserviço |
+| **Banco de Dados** | PostgreSQL 15 (RDS) — 1 instância por microserviço |
+| **Infraestrutura** | Terraform, AWS EKS, VPC, ECR, ALB (internet-facing), NAT Gateway |
 | **Containers** | Docker, Kubernetes (EKS), HPA |
-| **CI/CD** | GitHub Actions (build, test, deploy automático) |
+| **CI/CD** | GitHub Actions — workflows reutilizáveis (build, test, Terraform, deploy) |
 | **Qualidade** | SonarCloud, JaCoCo, OWASP Dependency Check |
 | **Observabilidade** | Datadog (APM, Logs, Infra), Spring Actuator, Logstash JSON |
 
@@ -42,15 +189,70 @@ O **SIAES** (Sistema Integrado de Atendimento e Execução de Serviços) é uma 
 ## Ordem de Deploy (do zero)
 
 ```
-1. infra-app    →  VPC, EKS, ECR, ALB Controller
-2. infra-db     →  RDS PostgreSQL (depende da VPC)
-3. app-siaes    →  Deploy da aplicação no EKS (cria o ALB via Ingress)
-4. lambda-auth  →  Lambdas + API Gateway (depende do ALB)
+1. infra-app              →  VPC, EKS, ECR, ALB Controller
+2. customer-microservice  →  Terraform (RDS) + Deploy no EKS
+3. order-microservice     →  Terraform (RDS) + Deploy no EKS
+4. inventory-microservice →  Terraform (RDS) + Deploy no EKS
 ```
 
-Para destruir, a ordem é inversa: `lambda-auth → app-siaes → infra-db → infra-app`.
+Cada microserviço provisiona sua própria infraestrutura (RDS, ECR) via Terraform e em seguida deploya a aplicação no EKS. O ALB unificado (`siaes-gateway`) é criado automaticamente pelo AWS Load Balancer Controller quando o primeiro Ingress é aplicado.
+
+Para destruir, a ordem é inversa: `inventory → order → customer → infra-app`.
 
 > Documentação detalhada de deploy e destroy disponível no [README do infra-app](https://github.com/NullPointerXp/infra-app).
+
+---
+
+## Microserviços
+
+### customer-microservice (`/customer-api`)
+
+Responsável pela gestão de usuários, veículos e autenticação.
+
+| Recurso | Endpoints principais |
+|---|---|
+| **Auth** | `POST /auth/login` |
+| **Users** | `GET/POST/PUT/DELETE /users` |
+| **Vehicles** | `GET/POST/PUT/DELETE /vehicles` |
+
+### order-microservice (`/order-api`)
+
+Responsável pelas ordens de serviço, atividades e fluxo de aprovação.
+
+| Recurso | Endpoints principais |
+|---|---|
+| **Service Orders** | `GET/POST /service-orders`, `PATCH /status` |
+| **Aprovação** | `GET /client/service-orders/approval?token=...` |
+| **Activities** | `GET/POST /order-activities` |
+| **Items** | `GET/POST /order-items` |
+
+### inventory-microservice (`/inventory-api`)
+
+Responsável pelo estoque, peças, serviços e movimentações.
+
+| Recurso | Endpoints principais |
+|---|---|
+| **Items (Parts)** | `GET/POST/PUT/DELETE /parts` |
+| **Service Labor** | `GET/POST/PUT/DELETE /service-labor` |
+| **Stock** | `PATCH /parts/{id}/stock/operation` |
+
+### Comunicação entre Microserviços
+
+```mermaid
+graph LR
+    Order["order-microservice"]
+    Customer["customer-microservice"]
+    Inventory["inventory-microservice"]
+
+    Order -->|"GET /customer-api/users/{doc}/document<br/>GET /customer-api/vehicles/plate/{plate}"| Customer
+    Order -->|"GET /inventory-api/items/{id}<br/>GET /inventory-api/service-labor/{id}<br/>PATCH /inventory-api/parts/{id}/stock/operation"| Inventory
+
+    style Order fill:#6DB33F,color:#fff
+    style Customer fill:#6DB33F,color:#fff
+    style Inventory fill:#6DB33F,color:#fff
+```
+
+O `order-microservice` comunica-se com `customer` e `inventory` via **OpenFeign**, propagando o JWT do header `Authorization` automaticamente via `FeignClientInterceptor`.
 
 ---
 
@@ -61,33 +263,25 @@ Para destruir, a ordem é inversa: `lambda-auth → app-siaes → infra-db → i
 ```mermaid
 sequenceDiagram
     participant Client as Cliente
-    participant APIGW as API Gateway
-    participant LambdaAuth as Lambda Authenticate
-    participant RDS as RDS PostgreSQL
-    participant JWTAuth as Lambda JWT Authorizer
-    participant ALB as ALB Interno
-    participant App as app-siaes (EKS)
+    participant ALB as ALB (siaes-gateway)
+    participant Customer as customer-microservice
 
-    Note over Client,App: 1. Login (obter token)
-    Client->>APIGW: POST /authenticate (cpf, password)
-    APIGW->>LambdaAuth: Invoke
-    LambdaAuth->>RDS: SELECT login, password, role FROM users WHERE document = ?
-    RDS-->>LambdaAuth: UserRecord
-    LambdaAuth->>LambdaAuth: BCrypt.checkpw(password, hash)
-    LambdaAuth->>LambdaAuth: JWT.create() com login, role (exp: 1h)
-    LambdaAuth-->>APIGW: { authorized: true, token: "eyJ..." }
-    APIGW-->>Client: 200 OK + JWT token
+    Note over Client,Customer: 1. Login (obter token)
+    Client->>ALB: POST /customer-api/auth/login (login, password)
+    ALB->>Customer: Forward request
+    Customer->>Customer: AuthenticationManager.authenticate()
+    Customer->>Customer: JWT.create() com login, role (exp: 1h)
+    Customer-->>ALB: 200 OK + { token: "eyJ..." }
+    ALB-->>Client: 200 OK + JWT token
 
-    Note over Client,App: 2. Requisição autenticada
-    Client->>APIGW: GET /service-orders (Authorization: Bearer token)
-    APIGW->>JWTAuth: Invoke (valida token)
-    JWTAuth->>JWTAuth: JWT.require(HMAC256).verify(token)
-    JWTAuth-->>APIGW: { isAuthorized: true }
-    APIGW->>ALB: VPC Link → ALB interno
-    ALB->>App: Forward request
-    App-->>ALB: 200 OK + response
-    ALB-->>APIGW: Response
-    APIGW-->>Client: 200 OK + dados
+    Note over Client,Customer: 2. Requisição autenticada
+    Client->>ALB: GET /order-api/service-orders (Authorization: Bearer token)
+    ALB->>ALB: Roteamento por path prefix
+    Note right of ALB: /order-api/* → order-service
+    ALB->>Customer: Forward para order-microservice
+    Note over Customer: JwtSecurityFilter valida token,<br/>extrai role e autentica no SecurityContext
+    Customer-->>ALB: 200 OK + response
+    ALB-->>Client: 200 OK + dados
 ```
 
 ### Fluxo de Ordem de Serviço
@@ -95,52 +289,49 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Colab as Colaborador
-    participant App as app-siaes
-    participant DB as PostgreSQL
+    participant ALB as ALB (siaes-gateway)
+    participant Order as order-microservice
+    participant Customer as customer-microservice
+    participant Inventory as inventory-microservice
     participant Email as Serviço de Email
     participant Cliente as Cliente
 
     Note over Colab,Cliente: Criação e ciclo de vida da OS
 
-    Colab->>App: POST /service-orders (placa, documento, atividades)
-    App->>DB: Buscar veículo e cliente
-    App->>DB: INSERT service_order (status: RECEBIDA)
-    App->>DB: INSERT order_activities + order_items
-    App-->>Colab: 201 Created
+    Colab->>ALB: POST /order-api/service-orders (placa, documento, atividades)
+    ALB->>Order: Forward
+    Order->>Customer: GET /customer-api/users/{doc}/document (Feign)
+    Customer-->>Order: UserResponse
+    Order->>Customer: GET /customer-api/vehicles/plate/{plate} (Feign)
+    Customer-->>Order: VehicleResponse
+    Order->>Inventory: GET /inventory-api/items/{id} (Feign)
+    Inventory-->>Order: ItemResponse
+    Order->>Order: INSERT service_order (status: RECEBIDA)
+    Order-->>Colab: 201 Created
 
-    Colab->>App: PATCH /service-orders/client/status/{id}?status=EM_DIAGNOSTICO
-    App->>DB: UPDATE status → EM_DIAGNOSTICO
-
-    Colab->>App: PATCH /service-orders/client/status/{id}?status=AGUARDANDO_APROVACAO
-    App->>DB: UPDATE status → AGUARDANDO_APROVACAO
-    App->>DB: INSERT token de aprovação (válido 24h)
-    App->>Email: Enviar link de aprovação com token
+    Colab->>ALB: PATCH /order-api/service-orders/client/status/{id}?status=AGUARDANDO_APROVACAO
+    ALB->>Order: Forward
+    Order->>Order: Gerar token de aprovação (válido 24h)
+    Order->>Email: Enviar link de aprovação com token
 
     Email-->>Cliente: Email com link de aprovação
 
-    Cliente->>App: GET /client/service-orders/approval?token=abc123
-    App->>DB: Buscar OS pelo token
-    App-->>Cliente: Página HTML com detalhes e valor total
+    Cliente->>ALB: GET /order-api/client/service-orders/approval?token=abc123
+    ALB->>Order: Forward (rota pública, sem JWT)
+    Order-->>Cliente: Página HTML com detalhes e valor total
 
-    Cliente->>App: POST /client/service-orders/decision?token=abc123&status=APROVADO_CLIENTE
-    App->>DB: UPDATE status → APROVADO_CLIENTE
-    App->>DB: Movimentação de estoque (SAIDA_OS)
-    App->>DB: DELETE token
-    App-->>Cliente: Página de confirmação
-
-    Colab->>App: PATCH /service-orders/client/status/{id}?status=EM_EXECUCAO
-    App->>DB: UPDATE status → EM_EXECUCAO
-
-    Colab->>App: PATCH /service-orders/client/status/{id}?status=FINALIZADA
-    App->>DB: UPDATE status → FINALIZADA
-
-    Colab->>App: PATCH /service-orders/client/status/{id}?status=ENTREGUE
-    App->>DB: UPDATE status → ENTREGUE
+    Cliente->>ALB: POST /order-api/client/service-orders/decision?token=abc123&status=APROVADO_CLIENTE
+    ALB->>Order: Forward
+    Order->>Inventory: PATCH /inventory-api/parts/{id}/stock/operation (Feign)
+    Inventory-->>Order: Stock updated
+    Order-->>Cliente: Página de confirmação
 ```
 
 ---
 
 ## Modelo de Dados (Diagrama ER)
+
+### customer-microservice (siaes_customers)
 
 ```mermaid
 erDiagram
@@ -161,7 +352,12 @@ erDiagram
         String model
         int year
     }
+```
 
+### order-microservice (siaes_orders)
+
+```mermaid
+erDiagram
     service_orders {
         UUID id PK
         UUID user_id FK
@@ -186,12 +382,6 @@ erDiagram
         Timestamp expiration
     }
 
-    service_labors {
-        UUID id PK
-        String description
-        BigDecimal laborCost
-    }
-
     order_activities {
         UUID id PK
         UUID service_order_id FK
@@ -206,12 +396,27 @@ erDiagram
         BigDecimal unitPrice
     }
 
+    service_orders ||--o{ order_activities : "contém"
+    service_orders ||--o{ service_order_status_history : "histórico"
+    order_activities ||--o{ order_items : "itens utilizados"
+```
+
+### inventory-microservice (siaes_inventory)
+
+```mermaid
+erDiagram
     items {
         UUID id PK
         String name
         BigDecimal unitPrice
         String unitMeasure
         String type
+    }
+
+    service_labors {
+        UUID id PK
+        String description
+        BigDecimal laborCost
     }
 
     stock_movements {
@@ -227,31 +432,24 @@ erDiagram
         Timestamp createdAt
     }
 
-    users ||--o{ service_orders : "possui"
-    vehicles ||--o{ service_orders : "associado a"
-    service_orders ||--o{ order_activities : "contém"
-    service_orders ||--o{ service_order_status_history : "histórico"
-    service_labors ||--o{ order_activities : "tipo de serviço"
-    order_activities ||--o{ order_items : "itens utilizados"
-    items ||--o{ order_items : "peça/insumo"
+    items ||--o{ stock_movements : "movimentações"
 ```
 
 ### Justificativa do Banco de Dados
 
+**Por que Database-per-Service?**
+
+- **Desacoplamento**: Cada microserviço gerencia seu schema independentemente, sem risco de breaking changes cruzadas
+- **Escalabilidade**: Cada banco pode ser escalado (vertical ou horizontalmente) de acordo com a carga do serviço
+- **Autonomia de deploy**: Atualizações de schema (via `hibernate.ddl-auto=update`) não impactam outros serviços
+- **Isolamento de falhas**: Se o RDS do inventory falhar, customer e order continuam funcionando para operações que não dependem de estoque
+
 **Por que PostgreSQL?**
 
-- **Modelo relacional**: O domínio de ordens de serviço é inerentemente relacional — uma OS pertence a um cliente e a um veículo, contém atividades, que por sua vez contêm itens vinculados ao estoque. Essas relações 1:N e N:N com integridade referencial são o ponto forte de bancos relacionais.
-- **ACID**: Operações críticas como movimentação de estoque (entrada/saída) e transições de status exigem transações atômicas. O PostgreSQL garante que uma saída de estoque + atualização de status ocorram de forma indivisível.
-- **Herança de tabela**: O modelo usa single-table inheritance (`items` com discriminator `type`) para representar peças e insumos na mesma tabela. O PostgreSQL lida nativamente com esse padrão via JPA/Hibernate.
-- **Compatibilidade com Spring Boot**: Driver nativo, Hibernate dialect maduro, e suporte completo a JSONB caso necessário para extensões futuras.
-- **Custo**: RDS PostgreSQL `db.t3.micro` no Free Tier da AWS é gratuito por 12 meses. Mesmo fora do Free Tier, é uma das opções mais econômicas.
-
-**Relacionamentos principais:**
-- **users → service_orders**: Um cliente pode ter várias OS (1:N)
-- **vehicles → service_orders**: Um veículo pode ter várias OS ao longo do tempo (1:N)
-- **service_orders → order_activities**: Cada OS contém múltiplas atividades de serviço (1:N)
-- **order_activities → order_items**: Cada atividade usa múltiplas peças/insumos (1:N)
-- **service_orders → status_history**: Histórico completo de transições de status com timestamps (1:N)
+- **Modelo relacional**: Ordens de serviço são inerentemente relacionais — OS pertence a um cliente e a um veículo, contém atividades, que por sua vez contêm itens vinculados ao estoque
+- **ACID**: Operações críticas como movimentação de estoque e transições de status exigem transações atômicas
+- **Compatibilidade**: Driver nativo e Hibernate dialect maduro para Spring Boot
+- **Custo**: RDS PostgreSQL `db.t3.micro` no Free Tier da AWS
 
 ---
 
@@ -264,11 +462,10 @@ erDiagram
 **Decisão:** AWS foi escolhida como provedor de nuvem.
 
 **Justificativa:**
-- Maior ecossistema de serviços gerenciados (EKS, RDS, Lambda, API Gateway)
-- Free Tier generoso para ambiente acadêmico (RDS, Lambda, S3)
+- Maior ecossistema de serviços gerenciados (EKS, RDS, ECR, ALB)
+- Free Tier generoso para ambiente acadêmico (RDS, S3)
 - Terraform possui módulos oficiais maduros para todos os serviços utilizados
 - EKS permite usar Kubernetes padrão sem vendor lock-in no orquestrador
-- Lambda + API Gateway oferecem autenticação serverless sem custo quando ocioso
 
 **Alternativas consideradas:**
 - **GCP (GKE)**: Kubernetes com boa experiência, mas menor Free Tier para RDS equivalente (Cloud SQL)
@@ -276,27 +473,27 @@ erDiagram
 
 ---
 
-### RFC-002: Estratégia de Autenticação
+### RFC-002: Estratégia de Autenticação (Fase 4)
 
-**Contexto:** A aplicação precisa autenticar usuários e proteger rotas da API com diferentes níveis de acesso (ADMIN, COLLABORATOR, CLIENT).
+**Contexto:** Na Fase 3, a autenticação era feita via Lambda Authorizer + API Gateway. Na Fase 4, com a migração para microserviços e ALB unificado, a estratégia foi simplificada.
 
-**Decisão:** Autenticação via JWT com Lambda Authorizer no API Gateway.
+**Decisão:** Autenticação via JWT com Spring Security diretamente em cada microserviço.
 
 **Justificativa:**
+- **Eliminação de componentes**: Remove Lambda Auth, API Gateway e VPC Link — reduz custo e complexidade
 - **Stateless**: JWT não requer sessão no servidor, compatível com auto-scaling do EKS (HPA)
-- **Separação de responsabilidades**: A autenticação (Lambda) é independente da aplicação (EKS), permitindo evolução separada
-- **API Gateway como gateway unificado**: Todas as requisições passam por um ponto único, facilitando rate limiting, logging e autenticação centralizada
-- **Custo zero quando ocioso**: Lambda não cobra quando não há requisições, ideal para ambiente acadêmico
-- **Aprovação sem login**: O fluxo de aprovação de OS pelo cliente usa tokens temporários (24h) acessíveis via link, sem exigir cadastro/login
+- **ALB como gateway**: O ALB unificado (Ingress Group) roteia por path prefix, substituindo o API Gateway
+- **Propagação de token**: O `FeignClientInterceptor` repassa o JWT entre microserviços automaticamente
+- **Aprovação sem login**: O fluxo de aprovação de OS pelo cliente usa tokens temporários (24h) acessíveis via link público
 
 **Fluxo:**
-1. `POST /authenticate` → Lambda valida CPF + senha no RDS → retorna JWT (1h)
-2. Demais rotas → Lambda JWT Authorizer valida o token → proxy para o ALB interno → app no EKS
-3. Aprovação de OS → Token único enviado por email → páginas HTML públicas sem autenticação
+1. `POST /customer-api/auth/login` → Spring Security valida login + senha → retorna JWT (1h)
+2. Demais rotas → `JwtSecurityFilter` valida o token → autoriza por role (ADMIN, COLLABORATOR, CLIENT)
+3. Chamadas entre serviços → OpenFeign com `Authorization: Bearer` propagado automaticamente
 
 **Alternativas consideradas:**
+- **Manter Lambda Auth + API Gateway**: Funcional, mas adiciona latência e custo desnecessários para o escopo
 - **Cognito**: Mais completo (MFA, social login), mas overengineering para o escopo
-- **Auth direto no Spring Security**: Mais simples, mas sem o benefício do gateway centralizado
 
 ---
 
@@ -304,19 +501,19 @@ erDiagram
 
 **Contexto:** Necessidade de persistir dados de usuários, veículos, ordens de serviço, estoque e histórico.
 
-**Decisão:** PostgreSQL 15 via AWS RDS.
+**Decisão:** PostgreSQL 15 via AWS RDS, com database-per-service (1 instância por microserviço).
 
 **Justificativa:**
-- Modelo de dados relacional com integridade referencial obrigatória (FK entre OS → cliente, veículo, atividades, itens)
+- Modelo de dados relacional com integridade referencial obrigatória (FK entre OS → atividades, itens)
 - Transações ACID para operações críticas (movimentação de estoque + mudança de status)
 - Hibernate/JPA oferecem suporte de primeiro nível ao PostgreSQL
 - RDS elimina gerenciamento de backup, patching e replicação
 - `db.t3.micro` é elegível ao Free Tier da AWS
 
 **Alternativas consideradas:**
-- **MySQL (RDS)**: Viável, mas PostgreSQL tem melhor suporte a tipos complexos e herança de tabela (single-table inheritance usado no modelo de `items`)
-- **DynamoDB**: Inadequado — o modelo possui relações N:N (atividades → itens) e queries complexas (filtrar OS por status, veículo, cliente) que demandam JOINs
-- **MongoDB**: Possível para o modelo de OS como documento, mas perderia integridade referencial no estoque
+- **MySQL (RDS)**: Viável, mas PostgreSQL tem melhor suporte a tipos complexos e herança de tabela
+- **DynamoDB**: Inadequado — o modelo possui relações N:N e queries complexas que demandam JOINs
+- **Banco compartilhado**: Viola o princípio de autonomia dos microserviços
 
 ---
 
@@ -331,7 +528,7 @@ erDiagram
 **Decisão:** Usar AWS EKS com managed node groups.
 
 **Consequências:**
-- (+) HPA escala automaticamente de 1 a 3 réplicas baseado em CPU (60%) e memória (70%)
+- (+) HPA escala automaticamente baseado em CPU (60%) e memória (70%)
 - (+) Probes (startup, readiness, liveness) garantem self-healing
 - (+) Rolling updates com zero downtime via Deployment strategy
 - (+) AWS Load Balancer Controller cria ALBs automaticamente a partir de Ingress
@@ -346,7 +543,7 @@ erDiagram
 
 **Contexto:** A carga de trabalho varia — picos em horários comerciais, ocioso à noite.
 
-**Decisão:** HPA com min 1, max 3 réplicas, baseado em CPU e memória.
+**Decisão:** HPA com min 1, max 5 réplicas, baseado em CPU e memória.
 
 **Configuração:**
 - CPU target: 60% de utilização média
@@ -355,26 +552,33 @@ erDiagram
 - Scale down: até 50% de redução, estabilização de 30s
 
 **Consequências:**
-- (+) Custo otimizado — 1 réplica em baixa carga, até 3 em pico
+- (+) Custo otimizado — 1 réplica em baixa carga, até 5 em pico
 - (+) Resposta automática a aumentos de demanda
 - (-) Java (Spring Boot) tem cold start de ~60s, coberto pelo startupProbe (5 min timeout)
 
 ---
 
-### ADR-003: API Gateway como Ponto de Entrada Único
+### ADR-003: ALB Unificado com Ingress Group (Fase 4)
 
-**Status:** Aceito
+**Status:** Aceito (substitui ADR-003 da Fase 3: API Gateway como Ponto de Entrada Único)
 
-**Contexto:** A aplicação precisa de autenticação centralizada, rate limiting futuro e roteamento entre Lambda (autenticação) e EKS (aplicação).
+**Contexto:** Na Fase 3, o ponto de entrada era o API Gateway com Lambda Authorizer e VPC Link para um ALB interno. Na Fase 4, com a migração para microserviços, essa arquitetura foi simplificada.
 
-**Decisão:** AWS API Gateway HTTP API com VPC Link para o ALB interno.
+**Decisão:** ALB internet-facing unificado via AWS Load Balancer Controller com Kubernetes Ingress Group.
+
+**Configuração:**
+- Todos os Ingresses compartilham `group.name: siaes-gateway`
+- Cada microserviço define seu `context_path` (`/customer-api`, `/order-api`, `/inventory-api`)
+- `group.order` define prioridade de roteamento (10, 20, 30)
+- Autenticação é feita dentro de cada microserviço via Spring Security
 
 **Consequências:**
-- (+) Rota `/authenticate` vai para Lambda (serverless, sem custo ocioso)
-- (+) Rota `ANY /{proxy+}` vai para o ALB do EKS com JWT Authorizer (cache de 5 min)
-- (+) ALB interno (scheme: internal) não é exposto à internet — só acessível via VPC Link
-- (+) Ponto único para logging, métricas e futuros middlewares
-- (-) Adiciona ~10-30ms de latência por hop (API Gateway → VPC Link → ALB → Pod)
+- (+) Remove 3 componentes AWS (Lambda Auth, API Gateway, VPC Link) — reduz custo e latência
+- (+) Um único ALB serve todos os microserviços — roteamento por path prefix
+- (+) Cada microserviço controla suas próprias regras de segurança (flexibilidade)
+- (+) Health check por microserviço (`/order-api/actuator/health`)
+- (-) Perde rate limiting nativo do API Gateway (pode ser adicionado com Nginx Ingress no futuro)
+- (-) ALB é exposto diretamente à internet (mitigado por Spring Security + JWT)
 
 ---
 
@@ -390,40 +594,61 @@ erDiagram
 - (+) Ambientes prod e stg criados a partir dos mesmos módulos com valores diferentes
 - (+) State no S3 permite colaboração e uso tanto local quanto via GitHub Actions
 - (+) Destroy e recreate confiável — o state sabe exatamente o que foi criado
-- (+) Remote state entre projetos (infra-db lê outputs do infra-app)
+- (+) Remote state entre projetos (microserviços leem outputs do infra-app)
 - (-) Requer conhecimento de HCL e da API da AWS
 
 ---
 
-### ADR-005: Separação em 4 Repositórios
+### ADR-005: Decomposição em Microserviços (Fase 4)
+
+**Status:** Aceito (evolução do ADR-005 da Fase 3: Separação em 4 Repositórios)
+
+**Contexto:** Na Fase 3, o sistema era um monolito (`app-siaes`). Na Fase 4, foi decomposto em 3 microserviços seguindo Domain-Driven Design.
+
+**Decisão:** Decompor em `customer-microservice`, `order-microservice` e `inventory-microservice`, cada um com seu banco de dados e pipeline CI/CD independente.
+
+| Microserviço | Domínio | Banco | Context Path |
+|---|---|---|---|
+| `customer-microservice` | Usuários, Veículos, Auth | `siaes_customers` | `/customer-api` |
+| `order-microservice` | Ordens de Serviço, Atividades | `siaes_orders` | `/order-api` |
+| `inventory-microservice` | Estoque, Peças, Mão de Obra | `siaes_inventory` | `/inventory-api` |
+
+**Consequências:**
+- (+) Deploy independente — mudar o order não rebuilda o customer
+- (+) Escalabilidade independente — HPA por microserviço
+- (+) Database-per-service — isolamento total de dados
+- (+) CI/CD mais rápido — cada repo builda apenas o que é seu
+- (-) Complexidade de comunicação — OpenFeign com propagação de JWT
+- (-) Consistência eventual — sem transações distribuídas (aceitável para o domínio)
+
+---
+
+### ADR-006: Workflows Reutilizáveis de CI/CD
 
 **Status:** Aceito
 
-**Contexto:** O projeto envolve infraestrutura de rede, banco de dados, aplicação e autenticação — com ciclos de vida diferentes.
+**Contexto:** Com 3 microserviços com pipelines idênticas (Terraform + build + deploy EKS), manter workflows duplicados gera custo de manutenção.
 
-**Decisão:** Dividir em 4 repositórios independentes com remote state entre eles.
+**Decisão:** Criar workflows reutilizáveis no repositório `github-action`, versionados com tags semânticas.
 
-| Repositório | Ciclo de vida | Motivo da separação |
-|---|---|---|
-| `infra-app` | Raramente muda | VPC e EKS são estáveis após criação |
-| `infra-db` | Raramente muda | RDS é estável, schema evolui via JPA |
-| `app-siaes` | Muda frequentemente | Código da aplicação com deploy contínuo |
-| `lambda-auth` | Muda ocasionalmente | Autenticação é independente do app |
+**Workflows:**
+- `reusable-terraform-microservice.yml` — Terraform plan/apply com outputs de RDS
+- `reusable-java-eks-deploy.yml` — Build Maven, push ECR, apply K8s manifests
 
 **Consequências:**
-- (+) Deploy independente — mudar o app não reaplica a infra
-- (+) Permissões granulares — time de infra vs time de app
-- (+) CI/CD mais rápido — cada repo builda apenas o que é seu
-- (-) Dependência entre repos via remote state (ordem de deploy importa)
+- (+) Mudança em um workflow aplica a todos os microserviços na próxima versão
+- (+) Versionamento por tags (`v1.0.8`) permite rollback independente
+- (+) Templates K8s centralizados no repositório `k8s`
+- (-) Requer bump de tag e atualização em cada repo para adotar mudanças
 
 ---
 
 ## Integrantes
 
-| Nome | GitHub                                                               |
-|---|----------------------------------------------------------------------|
+| Nome | GitHub |
+|---|---|
 | Douglas Andrade Severa | [@Douglas-Andrade-Severa](https://github.com/Douglas-Andrade-Severa) |
-| Edmar Santos | [@edmarsantos](https://github.com/edmarsantos)                       |
-| Felipe Martines Kurjata | [@Kurjata](https://github.com/Kurjata)                               |
-| Maximiliano Andrade | [maximilianoandrade67-hash](https://github.com/maximilianoandrade67-hash)                                                                |
-| Vinícius Louzada | [@vinelouzada](https://github.com/vinelouzada)                       |
+| Edmar Santos | [@edmarsantos](https://github.com/edmarsantos) |
+| Felipe Martines Kurjata | [@Kurjata](https://github.com/Kurjata) |
+| Maximiliano Andrade | [maximilianoandrade67-hash](https://github.com/maximilianoandrade67-hash) |
+| Vinícius Louzada | [@vinelouzada](https://github.com/vinelouzada) |
