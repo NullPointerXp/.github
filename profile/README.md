@@ -15,7 +15,7 @@ O **SIAES** (Sistema Integrado de Atendimento e Execução de Serviços) é uma 
 │  AWS Cloud                                                                                  │
 │                                                                                             │
 │  ┌──────────────┐    ┌───────┐    ┌──────────────────┐                                      │
-│  │ GitHub Actions│───>│ SonarCloud───>│  ECR (3 repos)   │                                      │
+│  │ GitHub Actions│───>│ SonarCloud───>│  ECR (4 repos)   │                                      │
 │  └──────────────┘    └───────┘    └──────────────────┘                                      │
 │         │                                                                        ┌─────────┐│
 │         │  terraform apply                                                       │ Datadog ││
@@ -34,18 +34,19 @@ O **SIAES** (Sistema Integrado de Atendimento e Execução de Serviços) é uma 
 │  │  │  ┌────────────────┐  ┌────────────┐  │  │  ┌───────────────────────────────────┐  │  │ │
 │  │  │  │ Internet       │  │ NAT        │  │  │  │  EKS Cluster                      │  │  │ │
 │  │  │  │ Gateway        │  │ Gateway    │──│──│─>│                                   │  │  │ │
-│  │  │  └───────┬────────┘  └────────────┘  │  │  │  ┌─────────┐ ┌────────┐ ┌──────┐ │  │  │ │
-│  │  │          │                           │  │  │  │customer │ │ order  │ │inven.│ │  │  │ │
-│  │  │  ┌───────v────────────────────────┐  │  │  │  │  pod    │ │  pod   │ │ pod  │ │  │  │ │
-│  │  │  │ ALB Internet-Facing            │  │  │  │  │  :8081  │ │  :8083 │ │ :8082│ │  │  │ │
-│  │  │  │ (siaes-gateway)                │──│──│─>│  └────┬────┘ └───┬────┘ └──┬───┘ │  │  │ │
-│  │  │  │                                │  │  │  │       │          │          │     │  │  │ │
-│  │  │  │  /customer-api/*  ─> :8081     │  │  │  └───────│──────────│──────────│─────┘  │  │ │
-│  │  │  │  /order-api/*     ─> :8083     │  │  │          │          │          │        │  │ │
-│  │  │  │  /inventory-api/* ─> :8082     │  │  │  ┌───────v──┐ ┌────v─────┐ ┌──v──────┐ │  │ │
-│  │  │  └────────────────────────────────┘  │  │  │   RDS    │ │   RDS    │ │   RDS   │ │  │ │
-│  │  │                                      │  │  │customers │ │ orders   │ │inventory│ │  │ │
-│  │  └──────────────────────────────────────┘  │  └──────────┘ └──────────┘ └─────────┘ │  │ │
+│  │  │  └───────┬────────┘  └────────────┘  │  │  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ │  │  │ │
+│  │  │          │                           │  │  │  │cust. │ │order │ │inven.│ │paymt │ │  │  │ │
+│  │  │  ┌───────v────────────────────────┐  │  │  │  │ pod  │ │ pod  │ │ pod  │ │ pod  │ │  │  │ │
+│  │  │  │ ALB Internet-Facing            │  │  │  │  │:8081 │ │:8083 │ │:8082 │ │:8084 │ │  │  │ │
+│  │  │  │ (siaes-gateway)                │──│──│─>│  └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘ │  │  │ │
+│  │  │  │                                │  │  │  │     │        │        │        │       │  │  │ │
+│  │  │  │  /customer-api/*  ─> :8081     │  │  │  └─────│────────│────────│────────│───────┘  │  │ │
+│  │  │  │  /order-api/*     ─> :8083     │  │  │        │        │        │                  │  │ │
+│  │  │  │  /inventory-api/* ─> :8082     │  │  │        │        │        │                  │  │ │
+│  │  │  │  /payment-api/*   ─> :8084     │  │  │  ┌─────v──┐ ┌──v───┐ ┌──v───┐ ┌───────────┐ │  │ │
+│  │  │  └────────────────────────────────┘  │  │  │  RDS   │ │ RDS  │ │ RDS  │ │ DynamoDB  │ │  │ │
+│  │  │                                      │  │  │customers│ │orders│ │inven.│ │billing tbl│ │  │ │
+│  │  └──────────────────────────────────────┘  │  └────────┘ └──────┘ └──────┘ └───────────┘ │  │ │
 │  │                                            │                                         │  │ │
 │  │                                            └─────────────────────────────────────────┘  │ │
 │  └─────────────────────────────────────────────────────────────────────────────────────────┘ │
@@ -88,11 +89,16 @@ graph TB
                     subgraph inventory-pod["inventory-microservice"]
                         IS["/inventory-api<br/>:8082"]
                     end
+
+                    subgraph payment-pod["payment-microservice"]
+                        PS["/payment-api<br/>:8084"]
+                    end
                 end
 
                 RDS_C["RDS PostgreSQL<br/>siaes_customers"]
                 RDS_O["RDS PostgreSQL<br/>siaes_orders"]
                 RDS_I["RDS PostgreSQL<br/>siaes_inventory"]
+                DDB["DynamoDB<br/>billing-table (single-table)"]
             end
         end
     end
@@ -101,6 +107,7 @@ graph TB
     ALB -->|"/customer-api/*"| CS
     ALB -->|"/order-api/*"| OS
     ALB -->|"/inventory-api/*"| IS
+    ALB -->|"/payment-api/*"| PS
 
     OS -->|"Feign HTTP"| CS
     OS -->|"Feign HTTP"| IS
@@ -108,14 +115,17 @@ graph TB
     CS --- RDS_C
     OS --- RDS_O
     IS --- RDS_I
+    PS --- DDB
 
     style ALB fill:#FF9900,color:#fff
     style CS fill:#6DB33F,color:#fff
     style OS fill:#6DB33F,color:#fff
     style IS fill:#6DB33F,color:#fff
+    style PS fill:#6DB33F,color:#fff
     style RDS_C fill:#3B48CC,color:#fff
     style RDS_O fill:#3B48CC,color:#fff
     style RDS_I fill:#3B48CC,color:#fff
+    style DDB fill:#3B48CC,color:#fff
 ```
 
 ### Visão do Fluxo de Requisição
@@ -144,8 +154,8 @@ graph TB
 
 | Aspecto | Fase 3 (Monolito) | Fase 4 (Microserviços) |
 |---|---|---|
-| **Aplicação** | Monolito `app-siaes` | 3 microserviços independentes |
-| **Banco de Dados** | RDS compartilhado | 1 RDS por microserviço (database-per-service) |
+| **Aplicação** | Monolito `app-siaes` | 4 microserviços independentes |
+| **Banco de Dados** | RDS compartilhado | 1 RDS por microserviço relacional; `payment-microservice` usa DynamoDB (single-table) |
 | **Autenticação** | Lambda Auth + API Gateway | Spring Security + JWT direto no ALB |
 | **Exposição** | ALB interno + API Gateway + VPC Link | ALB internet-facing unificado |
 | **Roteamento** | API Gateway com Lambda Authorizer | Kubernetes Ingress Group por context path |
@@ -156,10 +166,11 @@ graph TB
 | Repositório | Descrição | Stack |
 |---|---|---|
 | [`infra-app`](https://github.com/NullPointerXp/infra-app) | Infraestrutura base — VPC, EKS, ECR, ALB Controller | Terraform, AWS |
-| [`infra-db`](https://github.com/NullPointerXp/infra-db) | Banco de dados — RDS PostgreSQL (1 por microserviço) | Terraform, AWS |
+| [`infra-db`](https://github.com/NullPointerXp/infra-db) | Banco de dados — RDS PostgreSQL (microserviços relacionais) | Terraform, AWS |
 | [`customer-microservice`](https://github.com/NullPointerXp/customer-microservice) | Gestão de usuários, veículos e autenticação JWT | Java 21, Spring Boot, K8s |
 | [`order-microservice`](https://github.com/NullPointerXp/order-microservice) | Ordens de serviço, atividades e aprovação por email | Java 21, Spring Boot, K8s |
 | [`inventory-microservice`](https://github.com/NullPointerXp/inventory-microservice) | Estoque, peças, mão de obra e movimentações | Java 21, Spring Boot, K8s |
+| [`payment-microservice`](https://github.com/NullPointerXp/payment-microservice) | Orçamentos, pagamentos (Mercado Pago) e webhook | Java 21, Spring Boot, DynamoDB, K8s |
 | [`k8s`](https://github.com/NullPointerXp/k8s) | Templates Kubernetes — Deployment, Service, Ingress, ConfigMap, HPA | Kubernetes YAML |
 | [`github-action`](https://github.com/NullPointerXp/github-action) | Workflows reutilizáveis de CI/CD (Terraform + EKS deploy) | GitHub Actions |
 | [`terraform-modules`](https://github.com/NullPointerXp/terraform-modules) | Módulos Terraform reutilizáveis (RDS, ECR, etc.) | Terraform |
@@ -172,7 +183,7 @@ graph TB
 |---|---|
 | **Aplicação** | Java 21, Spring Boot 3.5, Spring Security, JPA/Hibernate, OpenFeign |
 | **Autenticação** | JWT (HMAC256) via Spring Security em cada microserviço |
-| **Banco de Dados** | PostgreSQL 15 (RDS) — 1 instância por microserviço |
+| **Banco de Dados** | PostgreSQL 15 (RDS) — 1 instância por microserviço relacional; DynamoDB para pagamentos |
 | **Infraestrutura** | Terraform, AWS EKS, VPC, ECR, ALB (internet-facing), NAT Gateway |
 | **Containers** | Docker, Kubernetes (EKS), HPA |
 | **CI/CD** | GitHub Actions — workflows reutilizáveis (build, test, Terraform, deploy) |
@@ -193,11 +204,14 @@ graph TB
 2. customer-microservice  →  Terraform (RDS) + Deploy no EKS
 3. order-microservice     →  Terraform (RDS) + Deploy no EKS
 4. inventory-microservice →  Terraform (RDS) + Deploy no EKS
+5. payment-microservice   →  Terraform (DynamoDB + ECR; IAM na role dos nodes do EKS) + Deploy no EKS
 ```
 
-Cada microserviço provisiona sua própria infraestrutura (RDS, ECR) via Terraform e em seguida deploya a aplicação no EKS. O ALB unificado (`siaes-gateway`) é criado automaticamente pelo AWS Load Balancer Controller quando o primeiro Ingress é aplicado.
+Cada microserviço provisiona sua própria infraestrutura (RDS ou DynamoDB, ECR) via Terraform e em seguida deploya a aplicação no EKS. O ALB unificado (`siaes-gateway`) é criado automaticamente pelo AWS Load Balancer Controller quando o primeiro Ingress é aplicado.
 
-Para destruir, a ordem é inversa: `inventory → order → customer → infra-app`.
+Para destruir, a ordem é inversa: `payment → inventory → order → customer → infra-app`.
+
+Após merge das alterações em [`github-action`](https://github.com/NullPointerXp/github-action) (outputs `dynamodb_table_name`, inputs de deploy) e em [`k8s`](https://github.com/NullPointerXp/k8s) (ConfigMap/Secret com DynamoDB e Mercado Pago), publique a tag **`v1.0.9`** no repositório `github-action` e use essa tag nos workflows do `payment-microservice` (e, se desejarem, nos outros microserviços). Defina no GitHub os secrets opcionais `MP_ACCESS_TOKEN` / `MP_WEBHOOK_URL` (prod) e `MP_ACCESS_TOKEN_STG` / `MP_WEBHOOK_URL_STG` (staging) para o Mercado Pago.
 
 > Documentação detalhada de deploy e destroy disponível no [README do infra-app](https://github.com/NullPointerXp/infra-app).
 
@@ -235,6 +249,16 @@ Responsável pelo estoque, peças, serviços e movimentações.
 | **Items (Parts)** | `GET/POST/PUT/DELETE /parts` |
 | **Service Labor** | `GET/POST/PUT/DELETE /service-labor` |
 | **Stock** | `PATCH /parts/{id}/stock/operation` |
+
+### payment-microservice (`/payment-api`)
+
+Orçamentos e pagamentos com integração Mercado Pago; persistência em **DynamoDB** (tabela single-table com GSI).
+
+| Recurso | Endpoints principais |
+|---|---|
+| **Budgets** | Base `/payment-service/budget` (com `context_path` `/payment-api`: `/payment-api/payment-service/budget/...`) |
+| **Payments** | Base `/payment-service/payment` |
+| **Webhook Mercado Pago** | `POST /payment-service/webhook/mercado-pago` — URL pública do MP deve apontar para o ALB (ex.: `https://<alb>/payment-api/payment-service/webhook/mercado-pago`); secrets `MP_ACCESS_TOKEN` / `MP_WEBHOOK_URL` no GitHub Actions |
 
 ### Comunicação entre Microserviços
 
@@ -568,7 +592,7 @@ erDiagram
 
 **Configuração:**
 - Todos os Ingresses compartilham `group.name: siaes-gateway`
-- Cada microserviço define seu `context_path` (`/customer-api`, `/order-api`, `/inventory-api`)
+- Cada microserviço define seu `context_path` (`/customer-api`, `/order-api`, `/inventory-api`, `/payment-api`)
 - `group.order` define prioridade de roteamento (10, 20, 30)
 - Autenticação é feita dentro de cada microserviço via Spring Security
 
@@ -603,15 +627,16 @@ erDiagram
 
 **Status:** Aceito (evolução do ADR-005 da Fase 3: Separação em 4 Repositórios)
 
-**Contexto:** Na Fase 3, o sistema era um monolito (`app-siaes`). Na Fase 4, foi decomposto em 3 microserviços seguindo Domain-Driven Design.
+**Contexto:** Na Fase 3, o sistema era um monolito (`app-siaes`). Na Fase 4, foi decomposto em microserviços seguindo Domain-Driven Design (evoluindo de três para quatro serviços com `payment-microservice`).
 
-**Decisão:** Decompor em `customer-microservice`, `order-microservice` e `inventory-microservice`, cada um com seu banco de dados e pipeline CI/CD independente.
+**Decisão:** Decompor em `customer-microservice`, `order-microservice`, `inventory-microservice` e `payment-microservice`, cada um com persistência e pipeline CI/CD alinhados ao domínio.
 
-| Microserviço | Domínio | Banco | Context Path |
+| Microserviço | Domínio | Persistência | Context Path |
 |---|---|---|---|
-| `customer-microservice` | Usuários, Veículos, Auth | `siaes_customers` | `/customer-api` |
-| `order-microservice` | Ordens de Serviço, Atividades | `siaes_orders` | `/order-api` |
-| `inventory-microservice` | Estoque, Peças, Mão de Obra | `siaes_inventory` | `/inventory-api` |
+| `customer-microservice` | Usuários, Veículos, Auth | RDS `siaes_customers` | `/customer-api` |
+| `order-microservice` | Ordens de Serviço, Atividades | RDS `siaes_orders` | `/order-api` |
+| `inventory-microservice` | Estoque, Peças, Mão de Obra | RDS `siaes_inventory` | `/inventory-api` |
+| `payment-microservice` | Orçamentos, Pagamentos | DynamoDB (ex.: `billing-table-{env}`) | `/payment-api` |
 
 **Consequências:**
 - (+) Deploy independente — mudar o order não rebuilda o customer
@@ -627,12 +652,12 @@ erDiagram
 
 **Status:** Aceito
 
-**Contexto:** Com 3 microserviços com pipelines idênticas (Terraform + build + deploy EKS), manter workflows duplicados gera custo de manutenção.
+**Contexto:** Com vários microserviços com pipelines semelhantes (Terraform + build + deploy EKS), manter workflows duplicados gera custo de manutenção.
 
 **Decisão:** Criar workflows reutilizáveis no repositório `github-action`, versionados com tags semânticas.
 
 **Workflows:**
-- `reusable-terraform-microservice.yml` — Terraform plan/apply com outputs de RDS
+- `reusable-terraform-microservice.yml` — Terraform plan/apply com outputs de RDS e/ou DynamoDB (`dynamodb_table_name`)
 - `reusable-java-eks-deploy.yml` — Build Maven, push ECR, apply K8s manifests
 
 **Consequências:**
