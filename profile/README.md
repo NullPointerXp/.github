@@ -211,7 +211,7 @@ Cada microserviço provisiona sua própria infraestrutura (RDS ou DynamoDB, ECR)
 
 Para destruir, a ordem é inversa: `payment → inventory → order → customer → infra-app`.
 
-Após merge das alterações em [`github-action`](https://github.com/NullPointerXp/github-action) (outputs `dynamodb_table_name`, inputs de deploy) e em [`k8s`](https://github.com/NullPointerXp/k8s) (ConfigMap/Secret com DynamoDB e Mercado Pago), publique a tag **`v1.0.9`** no repositório `github-action` e use essa tag nos workflows do `payment-microservice` (e, se desejarem, nos outros microserviços). Defina no GitHub os secrets opcionais `MP_ACCESS_TOKEN` / `MP_WEBHOOK_URL` (prod) e `MP_ACCESS_TOKEN_STG` / `MP_WEBHOOK_URL_STG` (staging) para o Mercado Pago.
+Após merge das alterações em [`github-action`](https://github.com/NullPointerXp/github-action) (outputs `dynamodb_table_name`, inputs de deploy) e em [`k8s`](https://github.com/NullPointerXp/k8s) (ConfigMap/Secret com DynamoDB e Mercado Pago), publique a tag **`v1.0.9`** no repositório `github-action` e use essa tag nos workflows do `payment-microservice` (e, se desejarem, nos outros microserviços). Defina no GitHub os secrets `MP_ACCESS_TOKEN` / `MP_WEBHOOK_SECRET` (prod) e `MP_ACCESS_TOKEN_STG` / `MP_WEBHOOK_SECRET_STG` (staging) para o Mercado Pago.
 
 > Documentação detalhada de deploy e destroy disponível no [README do infra-app](https://github.com/NullPointerXp/infra-app).
 
@@ -258,7 +258,7 @@ Orçamentos e pagamentos com integração Mercado Pago; persistência em **Dynam
 |---|---|
 | **Budgets** | Base `/payment-service/budget` (com `context_path` `/payment-api`: `/payment-api/payment-service/budget/...`) |
 | **Payments** | Base `/payment-service/payment` |
-| **Webhook Mercado Pago** | `POST /payment-service/webhook/mercado-pago` — URL pública do MP deve apontar para o ALB (ex.: `https://<alb>/payment-api/payment-service/webhook/mercado-pago`); secrets `MP_ACCESS_TOKEN` / `MP_WEBHOOK_URL` no GitHub Actions |
+| **Webhook Mercado Pago** | `POST /payment-service/webhook/mercado-pago` — URL pública do MP deve apontar para o ALB (ex.: `https://<alb>/payment-api/payment-service/webhook/mercado-pago`); secrets `MP_ACCESS_TOKEN` / `MP_WEBHOOK_SECRET` no GitHub Actions |
 
 ### Comunicação entre Microserviços
 
