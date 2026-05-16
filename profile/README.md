@@ -11,54 +11,63 @@ O **SIAES** (Sistema Integrado de Atendimento e Execução de Serviços) é uma 
 ### Visão da Infraestrutura AWS
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│  AWS Cloud                                                                                  │
-│                                                                                             │
-│  ┌──────────────┐    ┌───────┐    ┌──────────────────┐                                      │
-│  │ GitHub Actions│───>│ SonarCloud───>│  ECR (4 repos)   │                                      │
-│  └──────────────┘    └───────┘    └──────────────────┘                                      │
-│         │                                                                        ┌─────────┐│
-│         │  terraform apply                                                       │ Datadog ││
-│         v                                                                        └─────────┘│
-│  ┌──────────────┐                                                                           │
-│  │ S3 Terraform │                                                                           │
-│  │   Backend    │                                                                           │
-│  └──────────────┘                                                                           │
-│                                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐ │
-│  │  VPC                                                                                   │ │
-│  │                                                                                        │ │
-│  │  ┌──────────────────────────────────────┐  ┌─────────────────────────────────────────┐  │ │
-│  │  │  Public Subnets                      │  │  Private Subnets                        │  │ │
-│  │  │                                      │  │                                         │  │ │
-│  │  │  ┌────────────────┐  ┌────────────┐  │  │  ┌───────────────────────────────────┐  │  │ │
-│  │  │  │ Internet       │  │ NAT        │  │  │  │  EKS Cluster                      │  │  │ │
-│  │  │  │ Gateway        │  │ Gateway    │──│──│─>│                                   │  │  │ │
-│  │  │  └───────┬────────┘  └────────────┘  │  │  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ │  │  │ │
-│  │  │          │                           │  │  │  │cust. │ │order │ │inven.│ │paymt │ │  │  │ │
-│  │  │  ┌───────v────────────────────────┐  │  │  │  │ pod  │ │ pod  │ │ pod  │ │ pod  │ │  │  │ │
-│  │  │  │ ALB Internet-Facing            │  │  │  │  │:8081 │ │:8083 │ │:8082 │ │:8084 │ │  │  │ │
-│  │  │  │ (siaes-gateway)                │──│──│─>│  └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘ │  │  │ │
-│  │  │  │                                │  │  │  │     │        │        │        │       │  │  │ │
-│  │  │  │  /customer-api/*  ─> :8081     │  │  │  └─────│────────│────────│────────│───────┘  │  │ │
-│  │  │  │  /order-api/*     ─> :8083     │  │  │        │        │        │                  │  │ │
-│  │  │  │  /inventory-api/* ─> :8082     │  │  │        │        │        │                  │  │ │
-│  │  │  │  /payment-api/*   ─> :8084     │  │  │  ┌─────v──┐ ┌──v───┐ ┌──v───┐ ┌───────────┐ │  │ │
-│  │  │  └────────────────────────────────┘  │  │  │  RDS   │ │ RDS  │ │ RDS  │ │ DynamoDB  │ │  │ │
-│  │  │                                      │  │  │customers│ │orders│ │inven.│ │billing tbl│ │  │ │
-│  │  └──────────────────────────────────────┘  │  └────────┘ └──────┘ └──────┘ └───────────┘ │  │ │
-│  │                                            │                                         │  │ │
-│  │                                            └─────────────────────────────────────────┘  │ │
-│  └─────────────────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                             │
-└─────────────────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  AWS Cloud                                                                                                │
+│                                                                                                           │
+│  ┌──────────────┐    ┌────────────┐    ┌──────────────────┐                                               │
+│  │GitHub Actions│───>│ SonarCloud │───>│  ECR (4 repos)   │  ← 1 repo/imagem por MS/ambiente              │
+│  └──────┬───────┘    └────────────┘    └──────────────────┘                                               │
+│         │ build + push (CI de cada microsserviço)                          ┌─────────┐                    │
+│         │ terraform apply                                                  │ Datadog │                    │
+│         v                                                                  │ (prod)  │                    │
+│  ┌──────────────┐                                                          └─────────┘                    │
+│  │ S3 Terraform │   state: infra-app + state por microsserviço (pasta infra/)                             │
+│  │   Backend    │                                                                                         │
+│  └──────────────┘                                                                                         │
+│                                                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐     │  
+│  │  VPC  (provisionada pelo infra-app)                                                              │     │
+│  │                                                                                                  │     │ 
+│  │  ┌──────────────────────────────────────┐  ┌────────────────────────────────────────────────┐    │     │
+│  │  │  Public Subnets                      │  │  Private Subnets                               │    │     │ 
+│  │  │                                      │  │                                                │    │     │
+│  │  │  ┌────────────────┐  ┌────────────┐  │  │  ┌────────────────────────────────────────┐    │    │     │
+│  │  │  │ Internet       │  │ NAT        │  │  │  │  EKS Cluster                           │    │    │     │ 
+│  │  │  │ Gateway        │  │ Gateway    │──│──│─>│                                        │    │    │     │
+│  │  │  └───────┬────────┘  └────────────┘  │  │  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐   │    │    │     │
+│  │  │          │                           │  │  │  │cust. │ │order │ │inven.│ │paymt │   │    │    │     │
+│  │  │  ┌───────v────────────────────────┐  │  │  │  │ pod  │ │ pod  │ │ pod  │ │ pod  │   │    │    │     │
+│  │  │  │ ALB Internet-Facing            │  │  │  │  │:8081 │ │:8083 │ │:8082 │ │:8084 │   │    │    │     │
+│  │  │  │ (siaes-gateway)                │──│──│─>│  └──┬───┘ └──┬───┘ └──┬───┘ └───┬──┘   │    │    │     │
+│  │  │  │                                │  │  │  │     │        │        │         │      │    │    │     │
+│  │  │  │  /customer-api/*  ─> :8081     │  │  │  └─────┼────────┼────────┼─────────┼──────┘    │    │     │
+│  │  │  │  /order-api/*     ─> :8083     │  │  │        │        │        │         │           │    │     │
+│  │  │  │  /payment-api/*   ─> :8084     │  │  │   ┌────v────┐ ┌─v────┐ ┌─v────┐ ┌──v───────┐   │    │     │
+│  │  │  └────────────────────────────────┘  │  │   │  RDS    │ │ RDS  │ │ RDS  │ │ DynamoDB │   │    │     │
+│  │  │                                      │  │   │customers│ │orders│ │inven.│ │ billing  │   │    │     │
+│  │  └──────────────────────────────────────┘  │   └─────────┘ └──────┘ └──────┘ └──────────┘   │    │     │
+│  │                                            │                                                │    │     │
+│  │                                            │  ┌─────────────────────────────────────┐       │    │     │
+│  │                                            │  │  Amazon SQS (Terraform por MS)      │       │    │     │
+│  │                                            │  │  · awaiting-approval  (order)       │       │    │     │
+│  │                                            │  │  · payment-result     (pay → order) │       │    │     │
+│  │                                            │  └─────────────────────────────────────┘       │    │     │
+│  │                                            └────────────────────────────────────────────────┘    │     │
+│  └──────────────────────────────────────────────────────────────────────────────────────────────────┘     │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
          ^
          │  HTTP :80
     ┌────┴────┐
-    │ Cliente │
+    │ Cliente │          Mercado Pago (webhook) ──HTTP──> ALB /payment-api/.../webhook/...
     └─────────┘
 ```
+
+| Terraform | Repositório | Recursos principais |
+|-----------|-------------|---------------------|
+| Plataforma | `infra-app` | VPC, EKS, Load Balancer Controller, Datadog (prod) |
+| Por serviço | `*-microservice` / `infra/environments/` | ECR, RDS ou DynamoDB, SQS (quando aplicável) |
+| Módulos | `terraform-modules` | Blocos reutilizáveis (vpc, eks, rds, sqs, …) |
 
 ### Visão Detalhada dos Componentes
 
@@ -98,7 +107,7 @@ graph TB
                 RDS_C["RDS PostgreSQL<br/>siaes_customers"]
                 RDS_O["RDS PostgreSQL<br/>siaes_orders"]
                 RDS_I["RDS PostgreSQL<br/>siaes_inventory"]
-                DDB["DynamoDB<br/>billing-table (single-table)"]
+                DDB["DynamoDB<br/>billing-table"]
             end
         end
     end
@@ -109,8 +118,9 @@ graph TB
     ALB -->|"/inventory-api/*"| IS
     ALB -->|"/payment-api/*"| PS
 
-    OS -->|"Feign HTTP"| CS
-    OS -->|"Feign HTTP"| IS
+    OS -->|"Feign"| CS
+    OS -->|"Feign"| IS
+    OS -->|"Feign"| PS
 
     CS --- RDS_C
     OS --- RDS_O
@@ -128,26 +138,41 @@ graph TB
     style DDB fill:#3B48CC,color:#fff
 ```
 
+> **SQS** (não aparece no desenho acima para não poluir): fila de e-mail de aprovação no `order`; fila de resultado de pagamento do `payment` para o `order`. Ver [Saga Orchestrator](#saga-orchestrator-order-microservice).
+
 ### Visão do Fluxo de Requisição
 
+Requisições **síncronas** (HTTP pelo ALB):
+
 ```
-                                        ┌──────────────────────┐     ┌─────────────────────┐
-                                   ┌───>│  customer-microservice│────>│  RDS siaes_customers │
-                                   │    │  /customer-api  :8081 │     └─────────────────────┘
-                                   │    └──────────────────────┘
-                                   │              ^
-┌────────┐    ┌──────────────────┐ │              │ Feign
-│ Cliente │───>│  ALB siaes-gateway│─┤              │ + JWT
-└────────┘    │  (internet-facing)│ │    ┌──────────────────────┐     ┌─────────────────────┐
-              └──────────────────┘ ├───>│  order-microservice   │────>│  RDS siaes_orders    │
-                                   │    │  /order-api     :8083 │     └─────────────────────┘
-                                   │    └──────────────────────┘
-                                   │              │ Feign
-                                   │              v + JWT
-                                   │    ┌──────────────────────┐     ┌─────────────────────┐
-                                   └───>│  inventory-microservice────>│  RDS siaes_inventory │
-                                        │  /inventory-api :8082 │     └─────────────────────┘
-                                        └──────────────────────┘
+                                         ┌───────────────────────┐     ┌──────────────────────┐
+                                    ┌───>│  customer-microservice│────>│  RDS siaes_customers │
+                                    │    │  /customer-api  :8081 │     └──────────────────────┘
+                                    │    └───────────────────────┘
+                                    │              ^
+┌─────────┐   ┌───────────────────┐ │              │ Feign + JWT
+│ Cliente │──>│  ALB siaes-gateway│─┤              │
+└─────────┘   │  (internet-facing)│ │    ┌───────────────────────┐     ┌──────────────────────┐
+              └───────────────────┘ ├───>│  order-microservice   │────>│  RDS siaes_orders    │
+                                    │    │  /order-api     :8083 │     └──────────────────────┘
+                                    │    └───────────────────────┘
+                                    │              │ Feign + JWT
+                                    │              v
+                                    │    ┌────────────────────────┐     ┌──────────────────────┐
+                                    └───>│  inventory-microservice│ ───>│  RDS siaes_inventory │
+                                         │  /inventory-api :8082  │     └──────────────────────┘
+                                         └────────────────────────┘
+
+              Mesmo ALB  ──────────>   payment-microservice /payment-api :8084  ──>  DynamoDB
+                                       (webhook Mercado Pago também entra pelo ALB)
+```
+
+Requisições **assíncronas** (mensageria):
+
+```
+  order ──publica──> SQS awaiting-approval ──consome──> order (envia e-mail ao cliente)
+
+  Mercado Pago ──webhook──> payment ──publica──> SQS payment-result ──consome──> order (atualiza OS)
 ```
 
 ### Mudanças da Fase 3 para Fase 4
@@ -155,27 +180,28 @@ graph TB
 | Aspecto | Fase 3 (Monolito) | Fase 4 (Microserviços) |
 |---|---|---|
 | **Aplicação** | Monolito `app-siaes` | 4 microserviços independentes |
-| **Banco de Dados** | RDS compartilhado | 1 RDS por microserviço relacional; `payment-microservice` usa DynamoDB (single-table) |
-| **Autenticação** | Lambda Auth + API Gateway | Spring Security + JWT direto no ALB |
-| **Exposição** | ALB interno + API Gateway + VPC Link | ALB internet-facing unificado |
-| **Roteamento** | API Gateway com Lambda Authorizer | Kubernetes Ingress Group por context path |
-| **Comunicação interna** | N/A (monolito) | OpenFeign com propagação de JWT |
+| **Banco de Dados** | RDS compartilhado | 1 RDS por serviço relacional; `payment` usa DynamoDB (single-table) |
+| **Autenticação** | Lambda Auth + API Gateway | Spring Security + JWT no ALB |
+| **Exposição** | ALB interno + API Gateway + VPC Link | ALB internet-facing unificado (Ingress Group) |
+| **Roteamento** | API Gateway com Lambda Authorizer | Ingress Kubernetes por `context_path` |
+| **Comunicação interna** | N/A (monolito) | OpenFeign (+ JWT) e SQS para eventos de domínio |
+| **Transações distribuídas** | Transação local única | **Saga orchestrator** no `order-microservice` (compensações explícitas) |
+| **IaC** | Stack monolítica | `infra-app` (plataforma) + `infra/` por microsserviço + `terraform-modules` |
 
 ## Repositórios
 
 | Repositório | Descrição | Stack |
 |---|---|---|
-| [`infra-app`](https://github.com/NullPointerXp/infra-app) | Infraestrutura base — VPC, EKS, ECR, ALB Controller | Terraform, AWS |
-| [`infra-db`](https://github.com/NullPointerXp/infra-db) | Banco de dados — RDS PostgreSQL (microserviços relacionais) | Terraform, AWS |
-| [`customer-microservice`](https://github.com/NullPointerXp/customer-microservice) | Gestão de usuários, veículos e autenticação JWT | Java 21, Spring Boot, K8s |
-| [`order-microservice`](https://github.com/NullPointerXp/order-microservice) | Ordens de serviço, atividades e aprovação por email | Java 21, Spring Boot, K8s |
-| [`inventory-microservice`](https://github.com/NullPointerXp/inventory-microservice) | Estoque, peças, mão de obra e movimentações | Java 21, Spring Boot, K8s |
-| [`payment-microservice`](https://github.com/NullPointerXp/payment-microservice) | Orçamentos, pagamentos (Mercado Pago) e webhook | Java 21, Spring Boot, DynamoDB, K8s |
-| [`k8s`](https://github.com/NullPointerXp/k8s) | Templates Kubernetes — Deployment, Service, Ingress, ConfigMap, HPA | Kubernetes YAML |
-| [`github-action`](https://github.com/NullPointerXp/github-action) | Workflows reutilizáveis de CI/CD (Terraform + EKS deploy) | GitHub Actions |
-| [`terraform-modules`](https://github.com/NullPointerXp/terraform-modules) | Módulos Terraform reutilizáveis (RDS, ECR, etc.) | Terraform |
+| [`infra-app`](https://github.com/NullPointerXp/infra-app) | Plataforma compartilhada — VPC, EKS, Load Balancer Controller, Datadog (prod) | Terraform, AWS, Helm |
+| [`customer-microservice`](https://github.com/NullPointerXp/customer-microservice) | Usuários, veículos, autenticação JWT | Java 21, Spring Boot, K8s |
+| [`order-microservice`](https://github.com/NullPointerXp/order-microservice) | OS, atividades, **saga orchestrator**, integração inventory/payment | Java 21, Spring Boot, SQS, K8s |
+| [`inventory-microservice`](https://github.com/NullPointerXp/inventory-microservice) | Estoque, peças, mão de obra, reserva/confirmação | Java 21, Spring Boot, K8s |
+| [`payment-microservice`](https://github.com/NullPointerXp/payment-microservice) | Orçamentos, Mercado Pago, webhook, publicação em SQS | Java 21, Spring Boot, DynamoDB, K8s |
+| [`k8s`](https://github.com/NullPointerXp/k8s) | Templates K8s (Deployment, Service, Ingress, ConfigMap, HPA, Secrets) | Kubernetes YAML |
+| [`github-action`](https://github.com/NullPointerXp/github-action) | Workflows reutilizáveis (Terraform + build Maven + deploy EKS) | GitHub Actions |
+| [`terraform-modules`](https://github.com/NullPointerXp/terraform-modules) | Módulos compartilhados (VPC, EKS, ECR, RDS, DynamoDB, SQS, …) | Terraform |
 
-> **Repositórios descontinuados na Fase 4:** [`app-siaes`](https://github.com/NullPointerXp/app-siaes) (monolito) e [`lambda-auth`](https://github.com/NullPointerXp/lambda-auth) (Lambda + API Gateway).
+> **Legado / descontinuados na Fase 4:** [`app-siaes`](https://github.com/NullPointerXp/app-siaes) (monolito), [`lambda-auth`](https://github.com/NullPointerXp/lambda-auth) (Lambda + API Gateway), [`infra-db`](https://github.com/NullPointerXp/infra-db) (RDS centralizado — substituído pelo Terraform em cada microsserviço).
 
 ## Tech Stack
 
@@ -184,7 +210,9 @@ graph TB
 | **Aplicação** | Java 21, Spring Boot 3.5, Spring Security, JPA/Hibernate, OpenFeign |
 | **Autenticação** | JWT (HMAC256) via Spring Security em cada microserviço |
 | **Banco de Dados** | PostgreSQL 15 (RDS) — 1 instância por microserviço relacional; DynamoDB para pagamentos |
-| **Infraestrutura** | Terraform, AWS EKS, VPC, ECR, ALB (internet-facing), NAT Gateway |
+| **Infraestrutura** | Terraform, AWS EKS, VPC, ECR (por MS), ALB, RDS, DynamoDB, SQS, NAT Gateway |
+| **Integração assíncrona** | Amazon SQS (Spring Cloud AWS) — aprovação de OS e resultado de pagamento |
+| **Pagamentos** | Mercado Pago (Orders API + webhook) |
 | **Containers** | Docker, Kubernetes (EKS), HPA |
 | **CI/CD** | GitHub Actions — workflows reutilizáveis (build, test, Terraform, deploy) |
 | **Qualidade** | SonarCloud, JaCoCo, OWASP Dependency Check |
@@ -197,23 +225,145 @@ graph TB
 | **Produção** | `main` | Ambiente principal com alta disponibilidade |
 | **Staging** | `stg` | Ambiente de homologação com custos reduzidos |
 
+### Visão do CI/CD e repositórios reutilizáveis
+
+A infraestrutura e o deploy **não vivem num único monorepo**. Cada microsserviço tem o seu código e a pasta `infra/`, mas **módulos Terraform**, **workflows GitHub Actions** e **manifests Kubernetes** são centralizados e versionados por tag.
+
+#### Repositórios e o que cada um guarda
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  Repositórios da organização (NullPointerXp)                                           │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  terraform-modules@v1.2.0          github-action@v1.0.10           k8s (branch main)    │
+│  ┌──────────────────────┐          ┌──────────────────────┐        ┌─────────────────┐  │
+│  │ vpc/  eks/  ecr/     │          │ reusable-terraform-  │        │ templates/      │  │
+│  │ rds/  sqs/ dynamodb/ │          │   microservice.yml   │        │  deployment     │  │
+│  │ … (módulos HCL)      │          │ reusable-java-eks-   │        │  service        │  │
+│  └──────────┬───────────┘          │   deploy.yml         │        │  ingress        │  │
+│             │ git::…?ref=v1.2.0    └──────────┬───────────┘        │  configmap      │  │
+│             │ (source nos .tf)                │ uses: …@v1.0.10    │  hpa, secrets   │  │
+│             │                                 │ (chamado pelos     └────────┬────────┘  │
+│             │                                 │  workflows dos MS)            │ checkout  │
+│             ▼                                 ▼                               │ envsubst  │
+│  ┌──────────────────────┐          ┌──────────────────────┐                  │           │
+│  │ infra-app            │          │ *-microservice       │◄─────────────────┘           │
+│  │ environments/        │          │ .github/workflows/   │                              │
+│  │   stg/  prod/        │          │   cicd-stg.yml       │                              │
+│  │ → VPC, EKS, Helm     │          │   cicd-prod.yml      │                              │
+│  │   (consome vpc+eks)  │          │ infra/environments/  │                              │
+│  └──────────┬───────────┘          │   stg/  prod/        │                              │
+│             │ remote state S3       │ → ECR, RDS/Dynamo,   │                              │
+│             │ (outputs: vpc,        │   SQS (por serviço)  │                              │
+│             │  cluster, subnets)   │   (consome ecr,rds…) │                              │
+│             └──────────────────────►│   lê remote state    │                              │
+│                                     │   do infra-app       │                              │
+│                                     └──────────────────────┘                              │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+         Estado Terraform (S3 bucket tf-state-backend-siaes)
+         ┌────────────────────────────────────────────────────────────┐
+         │  key: siaes/{stg|prod}/terraform.tfstate     ← infra-app   │
+         │  key: …/customer-microservice/…              ← cada MS       │
+         │  key: …/order-microservice/…                 ← cada MS       │
+         └────────────────────────────────────────────────────────────┘
+```
+
+| Peça reutilizável | Onde vive | Quem consome | Pin de versão |
+|---|---|---|---|
+| Módulos Terraform (`vpc`, `eks`, `ecr`, `rds`, `sqs`, `dynamodb`, …) | `terraform-modules` | `infra-app` e `infra/environments/*` de cada MS | `?ref=v1.2.0` no `source` |
+| Workflow Terraform (plan/apply) | `github-action` | `infra-app` e microsserviços | `@v1.0.10` |
+| Workflow Java + EKS (build, push, kubectl) | `github-action` | Microsserviços (após Terraform) | `@v1.0.10` |
+| Manifests K8s (templates YAML) | `k8s` | Job de deploy do `github-action` | branch `main` (+ `INFRA_CHECKOUT_TOKEN`) |
+
+#### Fluxo de deploy em um microsserviço (push na branch)
+
+Cada repositório de serviço expõe dois jobs encadeados (`needs: terraform` → `deploy`). O **infra-app** segue o mesmo padrão de Terraform reutilizável, mas **sem** job de build/deploy de aplicação.
+
+```
+  desenvolvedor
+       │
+       │  git push  (stg  ou  main)
+       ▼
+┌──────────────────┐     ┌─────────────────────────────────────────────────────────────┐
+│ *-microservice     │     │  Job 1: terraform  (reusable-terraform-microservice.yml)    │
+│ cicd-stg.yml       │────>│  · checkout do repo do MS                                   │
+│ cicd-prod.yml      │     │  · terraform init  (clona terraform-modules via PAT)        │
+└──────────────────┘     │  · working_directory: infra/environments/{stg|prod}           │
+                           │  · lê remote state do infra-app (VPC, EKS, subnets, SG)     │
+                           │  · apply: ECR, RDS ou DynamoDB, SQS (conforme o serviço)    │
+                           │  · grava state próprio no S3                                  │
+                           │  · outputs → rds_address, dynamodb_table_name, …            │
+                           └────────────────────────────┬────────────────────────────────┘
+                                                        │ needs: terraform (sucesso)
+                                                        ▼
+                           ┌─────────────────────────────────────────────────────────────┐
+                           │  Job 2: deploy  (reusable-java-eks-deploy.yml)              │
+                           │  · mvn test + package                                       │
+                           │  · docker build + push → ECR {service}-microservice-{env}   │
+                           │  · checkout repo k8s → envsubst em templates/                │
+                           │  · injeta URL do RDS, context_path, secrets (GitHub Secrets)  │
+                           │  · kubectl apply no siaes-cluster-{stg|prod}                  │
+                           │  · Ingress group siaes-gateway → ALB internet-facing        │
+                           │  · (prod) SonarCloud + Secret Datadog                         │
+                           └────────────────────────────┬────────────────────────────────┘
+                                                        ▼
+                                              Pods no EKS · tráfego pelo ALB
+```
+
+**infra-app** (só plataforma — sem imagem Java):
+
+```
+  push em environments/stg/** ou environments/prod/**
+       │
+       ▼
+  reusable-terraform-microservice.yml  →  apply VPC + EKS + Helm (ALB Controller, Datadog em prod)
+       │
+       └── outputs no S3  ──►  microsserviços usam data "terraform_remote_state" "infra_app"
+```
+
+#### Pastas típicas por repositório
+
+```
+terraform-modules/          github-action/                 k8s/
+├── vpc/                    └── .github/workflows/         └── templates/
+├── eks/                        reusable-terraform-            deployment.yaml
+├── ecr/                        microservice.yml               ingress.yaml  (group: siaes-gateway)
+├── rds/                        reusable-java-eks-deploy.yml   configmap.yaml, hpa.yaml, …
+├── sqs/                                                           secrets/*.yaml (placeholders)
+└── dynamodb/
+
+infra-app/                  order-microservice/  (exemplo)
+├── environments/           ├── src/                    ← código Spring Boot
+│   ├── stg/main.tf         ├── .github/workflows/
+│   └── prod/main.tf        │     cicd-stg.yml  ──uses──► github-action@v1.0.10
+└── .github/workflows/      └── infra/environments/
+    terraform-stg.yml           ├── stg/main.tf   ──module──► terraform-modules@v1.2.0
+                                └── prod/main.tf  ──remote state──► infra-app (S3)
+```
+
+> **Por que tags (`v1.0.10`, `v1.2.0`)?** Mudanças em `main` dos repos compartilhados não quebram pipelines em produção até cada consumidor atualizar o pin. Rollback = voltar a tag anterior nos workflows ou no `ref` dos módulos.
+
 ## Ordem de Deploy (do zero)
 
 ```
-1. infra-app              →  VPC, EKS, ECR, ALB Controller
-2. customer-microservice  →  Terraform (RDS) + Deploy no EKS
-3. order-microservice     →  Terraform (RDS) + Deploy no EKS
-4. inventory-microservice →  Terraform (RDS) + Deploy no EKS
-5. payment-microservice   →  Terraform (DynamoDB + ECR; IAM na role dos nodes do EKS) + Deploy no EKS
+1. infra-app              →  VPC, EKS, Load Balancer Controller (+ Datadog Operator em prod)
+2. customer-microservice  →  Terraform (ECR + RDS) + deploy EKS
+3. inventory-microservice →  Terraform (ECR + RDS) + deploy EKS   # antes do order (Feign na criação de OS)
+4. order-microservice     →  Terraform (ECR + RDS + SQS awaiting-approval) + deploy EKS
+5. payment-microservice   →  Terraform (ECR + DynamoDB + SQS payment-result) + deploy EKS
 ```
 
-Cada microserviço provisiona sua própria infraestrutura (RDS ou DynamoDB, ECR) via Terraform e em seguida deploya a aplicação no EKS. O ALB unificado (`siaes-gateway`) é criado automaticamente pelo AWS Load Balancer Controller quando o primeiro Ingress é aplicado.
+Cada microsserviço lê o **remote state** do `infra-app` (VPC, subnets, security group dos nodes). O ALB `siaes-gateway` nasce no primeiro Ingress aplicado.
 
-Para destruir, a ordem é inversa: `payment → inventory → order → customer → infra-app`.
+**Destroy (inverso):** `payment → order → inventory → customer → infra-app`.
 
-Após merge das alterações em [`github-action`](https://github.com/NullPointerXp/github-action) (outputs `dynamodb_table_name`, inputs de deploy) e em [`k8s`](https://github.com/NullPointerXp/k8s) (ConfigMap/Secret com DynamoDB e Mercado Pago), publique a tag **`v1.0.9`** no repositório `github-action` e use essa tag nos workflows do `payment-microservice` (e, se desejarem, nos outros microserviços). Defina no GitHub os secrets opcionais `MP_ACCESS_TOKEN` / `MP_WEBHOOK_URL` (prod) e `MP_ACCESS_TOKEN_STG` / `MP_WEBHOOK_URL_STG` (staging) para o Mercado Pago.
+**CI/CD:** workflows em cada repo chamam [`github-action`](https://github.com/NullPointerXp/github-action) (`reusable-terraform-microservice.yml` + `reusable-java-eks-deploy.yml`), pin **`@v1.0.10`**. Módulos Terraform compartilhados: **`terraform-modules@v1.2.0`**.
 
-> Documentação detalhada de deploy e destroy disponível no [README do infra-app](https://github.com/NullPointerXp/infra-app).
+**Secrets GitHub (Mercado Pago):** `MP_ACCESS_TOKEN` / `MP_WEBHOOK_SECRET` (prod) e `MP_ACCESS_TOKEN_STG` / `MP_WEBHOOK_SECRET_STG` (stg).
+
+> Detalhes operacionais: [README do infra-app](https://github.com/NullPointerXp/infra-app).
 
 ---
 
@@ -229,26 +379,98 @@ Responsável pela gestão de usuários, veículos e autenticação.
 | **Users** | `GET/POST/PUT/DELETE /users` |
 | **Vehicles** | `GET/POST/PUT/DELETE /vehicles` |
 
+**Terraform:** ECR + RDS PostgreSQL (`infra/environments/`).
+
 ### order-microservice (`/order-api`)
 
-Responsável pelas ordens de serviço, atividades e fluxo de aprovação.
+Responsável pelas ordens de serviço, atividades, fluxo de aprovação e **orquestração da saga** entre inventory e payment.
 
 | Recurso | Endpoints principais |
 |---|---|
 | **Service Orders** | `GET/POST /service-orders`, `PATCH /status` |
-| **Aprovação** | `GET /client/service-orders/approval?token=...` |
+| **Aprovação** | `GET /client/service-orders/approval?token=...`, `POST .../decision` |
 | **Activities** | `GET/POST /order-activities` |
 | **Items** | `GET/POST /order-items` |
 
+**Terraform (`infra/environments/`):** ECR, RDS PostgreSQL, fila SQS `service-order-awaiting-approval-{env}` (e-mail assíncrono de aprovação).
+
+### Saga Orchestrator (order-microservice)
+
+O `order-microservice` adota o padrão **Saga Orchestrator** (orquestração centralizada): um coordenador no domínio de OS define a ordem dos passos, chama os participantes e executa **compensações** quando um passo falha. Não usamos coreografia pura (cada serviço reagindo sozinho a eventos sem dono do fluxo).
+
+**Coordenador:** `ClientApprovalOrchestrationUseCase` — reutilizado pelo fluxo autenticado (`UpdateStatusServiceOrderUseCase`), pelo link de token (`ApproveOrRejectByTokenUseCase`) e pelas operações de estoque em `ProcessPaymentResultUseCase`.
+
+**Participantes e integração:**
+
+| Participante | Integração | Papel na saga |
+|---|---|---|
+| `inventory-microservice` | OpenFeign (`PATCH .../stock/operation`) | Reserva, cancelamento e confirmação de estoque |
+| `payment-microservice` | OpenFeign (`POST .../budget`) | Criação do orçamento após aprovação |
+| `payment-microservice` | SQS `payment-result-{env}` | Resultado assíncrono do webhook Mercado Pago → `ProcessPaymentResultUseCase` |
+
+**Passos da saga de aprovação do cliente** (`executeApproval`):
+
+1. Carregar itens da OS e dados do cliente (Feign customer).
+2. **Reservar estoque** em todos os itens (inventory).
+3. **Criar orçamento** no payment (Feign).
+4. Persistir status `APROVADO_CLIENTE` → `AGUARDANDO_PAGAMENTO`.
+
+**Compensações implementadas:**
+
+- Falha ao criar orçamento → `CANCEL_RESERVATION` no inventory antes de retornar erro ao cliente.
+- Falha em item durante reserva parcial → compensa itens já reservados no mesmo loop (`applyStockOperation`).
+- Pagamento reprovado (mensagem SQS) → `CANCEL_RESERVATION` e status `PAGAMENTO_REPROVADO`.
+
+**Por que orchestrator (e não choreography)?**
+
+| Motivo | Explicação |
+|---|---|
+| **Dono do processo** | O ciclo de vida da OS pertence ao domínio *order*; a sequência “reservar → cobrar → aguardar pagamento” é regra de negócio da OS, não do payment ou do inventory isoladamente. |
+| **Ordem explícita** | É obrigatório reservar estoque **antes** de abrir o orçamento, para não cobrar sem garantir peças. Na coreografia, essa ordem dependeria de convenções frágeis entre eventos. |
+| **Compensação visível** | Rollback de reserva em um único lugar (`ClientApprovalOrchestrationUseCase`) facilita testes, logs e suporte; evita “compensações espalhadas” em vários consumidores SQS. |
+| **Reuso de fluxos** | O mesmo orquestrador atende aprovação por JWT (colaborador) e por token público (cliente), sem duplicar lógica distribuída. |
+| **Sem 2PC** | Database-per-service impede transação global; saga com compensação é o padrão aceito para consistência **eventual** entre bounded contexts. |
+| **Assíncrono só onde importa** | O webhook do Mercado Pago é lento e externo; o payment publica em SQS e o order reage — o orquestrador síncrono cobre o trecho crítico (aprovação + reserva + orçamento). |
+
+```
+  Cliente aprova a OS (link com token ou colaborador via API)
+                    │
+                    ▼
+         ┌─────────────────────────────┐
+         │     order-microservice       │  ← saga orchestrator
+         │ ClientApprovalOrchestration  │
+         └──────────────┬──────────────┘
+                    │
+     ┌──────────────┼──────────────┐
+     │ 1            │ 2            │ 3
+     ▼              ▼              ▼
+ inventory      payment         RDS order
+ RESERVE_STOCK   POST /budget    status →
+ (Feign)         (Feign)         AGUARDANDO_PAGAMENTO
+
+     Se (2) falhar ──compensação──> CANCEL_RESERVATION no inventory
+
+  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+
+  Depois (assíncrono):
+
+  Mercado Pago ──webhook──> payment ──SQS payment-result──> order
+                                                                  │
+                                    PAGAMENTO_REPROVADO ──────────┴──> cancela reserva
+                                    PAGAMENTO_APROVADO  ──────────────> atualiza status
+```
+
 ### inventory-microservice (`/inventory-api`)
 
-Responsável pelo estoque, peças, serviços e movimentações.
+Responsável pelo estoque, peças, serviços e movimentações (inclui operações de reserva usadas pela saga do order).
 
 | Recurso | Endpoints principais |
 |---|---|
 | **Items (Parts)** | `GET/POST/PUT/DELETE /parts` |
 | **Service Labor** | `GET/POST/PUT/DELETE /service-labor` |
 | **Stock** | `PATCH /parts/{id}/stock/operation` |
+
+**Terraform:** ECR + RDS PostgreSQL.
 
 ### payment-microservice (`/payment-api`)
 
@@ -258,7 +480,9 @@ Orçamentos e pagamentos com integração Mercado Pago; persistência em **Dynam
 |---|---|
 | **Budgets** | Base `/payment-service/budget` (com `context_path` `/payment-api`: `/payment-api/payment-service/budget/...`) |
 | **Payments** | Base `/payment-service/payment` |
-| **Webhook Mercado Pago** | `POST /payment-service/webhook/mercado-pago` — URL pública do MP deve apontar para o ALB (ex.: `https://<alb>/payment-api/payment-service/webhook/mercado-pago`); secrets `MP_ACCESS_TOKEN` / `MP_WEBHOOK_URL` no GitHub Actions |
+| **Webhook Mercado Pago** | `POST /payment-service/webhook/mercado-pago` — URL pública do MP no ALB; secrets `MP_*` no GitHub |
+
+**Terraform:** ECR, DynamoDB (`billing-table-{env}`, PK/SK + GSI1/GSI2), SQS `payment-result-{env}`; políticas IAM na role dos nodes EKS para acesso à tabela e à fila.
 
 ### Comunicação entre Microserviços
 
@@ -267,16 +491,20 @@ graph LR
     Order["order-microservice"]
     Customer["customer-microservice"]
     Inventory["inventory-microservice"]
+    Payment["payment-microservice"]
 
-    Order -->|"GET /customer-api/users/{doc}/document<br/>GET /customer-api/vehicles/plate/{plate}"| Customer
-    Order -->|"GET /inventory-api/items/{id}<br/>GET /inventory-api/service-labor/{id}<br/>PATCH /inventory-api/parts/{id}/stock/operation"| Inventory
+    Order -->|"GET users / vehicles"| Customer
+    Order -->|"GET items · PATCH stock"| Inventory
+    Order -->|"POST budget"| Payment
+    Payment -.->|"SQS payment-result"| Order
 
     style Order fill:#6DB33F,color:#fff
     style Customer fill:#6DB33F,color:#fff
     style Inventory fill:#6DB33F,color:#fff
+    style Payment fill:#6DB33F,color:#fff
 ```
 
-O `order-microservice` comunica-se com `customer` e `inventory` via **OpenFeign**, propagando o JWT do header `Authorization` automaticamente via `FeignClientInterceptor`.
+O `order-microservice` é o **orquestrador da saga** e concentra as chamadas Feign (JWT propagado pelo `FeignClientInterceptor`). O `payment` devolve o resultado do pagamento via **SQS**, sem o order precisar expor endpoint para o webhook do Mercado Pago.
 
 ---
 
@@ -289,23 +517,19 @@ sequenceDiagram
     participant Client as Cliente
     participant ALB as ALB (siaes-gateway)
     participant Customer as customer-microservice
+    participant Order as order-microservice
 
     Note over Client,Customer: 1. Login (obter token)
-    Client->>ALB: POST /customer-api/auth/login (login, password)
-    ALB->>Customer: Forward request
-    Customer->>Customer: AuthenticationManager.authenticate()
-    Customer->>Customer: JWT.create() com login, role (exp: 1h)
-    Customer-->>ALB: 200 OK + { token: "eyJ..." }
-    ALB-->>Client: 200 OK + JWT token
+    Client->>ALB: POST /customer-api/auth/login
+    ALB->>Customer: Forward
+    Customer->>Customer: valida login e gera JWT (1h)
+    Customer-->>Client: 200 OK + token
 
-    Note over Client,Customer: 2. Requisição autenticada
-    Client->>ALB: GET /order-api/service-orders (Authorization: Bearer token)
-    ALB->>ALB: Roteamento por path prefix
-    Note right of ALB: /order-api/* → order-service
-    ALB->>Customer: Forward para order-microservice
-    Note over Customer: JwtSecurityFilter valida token,<br/>extrai role e autentica no SecurityContext
-    Customer-->>ALB: 200 OK + response
-    ALB-->>Client: 200 OK + dados
+    Note over Client,Order: 2. Chamada autenticada a outro serviço
+    Client->>ALB: GET /order-api/service-orders (Bearer token)
+    ALB->>Order: Forward
+    Order->>Order: JwtSecurityFilter valida token e role
+    Order-->>Client: 200 OK + dados
 ```
 
 ### Fluxo de Ordem de Serviço
@@ -313,43 +537,34 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Colab as Colaborador
-    participant ALB as ALB (siaes-gateway)
+    participant ALB as ALB
     participant Order as order-microservice
     participant Customer as customer-microservice
     participant Inventory as inventory-microservice
-    participant Email as Serviço de Email
+    participant Email as E-mail
     participant Cliente as Cliente
 
-    Note over Colab,Cliente: Criação e ciclo de vida da OS
-
-    Colab->>ALB: POST /order-api/service-orders (placa, documento, atividades)
+    Colab->>ALB: POST /order-api/service-orders
     ALB->>Order: Forward
-    Order->>Customer: GET /customer-api/users/{doc}/document (Feign)
-    Customer-->>Order: UserResponse
-    Order->>Customer: GET /customer-api/vehicles/plate/{plate} (Feign)
-    Customer-->>Order: VehicleResponse
-    Order->>Inventory: GET /inventory-api/items/{id} (Feign)
-    Inventory-->>Order: ItemResponse
-    Order->>Order: INSERT service_order (status: RECEBIDA)
+    Order->>Customer: GET user e vehicle (Feign)
+    Order->>Inventory: GET items (Feign)
+    Order->>Order: INSERT OS (RECEBIDA)
     Order-->>Colab: 201 Created
 
-    Colab->>ALB: PATCH /order-api/service-orders/client/status/{id}?status=AGUARDANDO_APROVACAO
-    ALB->>Order: Forward
-    Order->>Order: Gerar token de aprovação (válido 24h)
-    Order->>Email: Enviar link de aprovação com token
+    Colab->>ALB: PATCH status AGUARDANDO_APROVACAO
+    Order->>Order: gera token de aprovação (24h)
+    Order->>Email: envia link (via SQS interno)
 
-    Email-->>Cliente: Email com link de aprovação
+    Cliente->>ALB: GET /approval?token=...
+    Order-->>Cliente: página HTML com valor total
 
-    Cliente->>ALB: GET /order-api/client/service-orders/approval?token=abc123
-    ALB->>Order: Forward (rota pública, sem JWT)
-    Order-->>Cliente: Página HTML com detalhes e valor total
-
-    Cliente->>ALB: POST /order-api/client/service-orders/decision?token=abc123&status=APROVADO_CLIENTE
-    ALB->>Order: Forward
-    Order->>Inventory: PATCH /inventory-api/parts/{id}/stock/operation (Feign)
-    Inventory-->>Order: Stock updated
-    Order-->>Cliente: Página de confirmação
+    Cliente->>ALB: POST /decision APROVADO
+    Note over Order,Inventory: saga — reserva estoque e cria orçamento
+    Order->>Inventory: reserva estoque (Feign)
+    Order-->>Cliente: confirmação
 ```
+
+Pagamento pelo Mercado Pago e atualização final da OS são **assíncronos** (SQS) — ver [Saga Orchestrator](#saga-orchestrator-order-microservice).
 
 ---
 
@@ -459,6 +674,10 @@ erDiagram
     items ||--o{ stock_movements : "movimentações"
 ```
 
+### payment-microservice (DynamoDB `billing-table`)
+
+Modelo **single-table** (PK `pk`, SK `sk`, GSI1/GSI2 para consultas por orçamento/pagamento). Detalhes de entidades no repositório `payment-microservice`.
+
 ### Justificativa do Banco de Dados
 
 **Por que Database-per-Service?**
@@ -525,19 +744,21 @@ erDiagram
 
 **Contexto:** Necessidade de persistir dados de usuários, veículos, ordens de serviço, estoque e histórico.
 
-**Decisão:** PostgreSQL 15 via AWS RDS, com database-per-service (1 instância por microserviço).
+**Decisão:** PostgreSQL 15 via AWS RDS nos microsserviços relacionais; **DynamoDB** no `payment-microservice` (single-table para orçamentos e pagamentos).
 
-**Justificativa:**
-- Modelo de dados relacional com integridade referencial obrigatória (FK entre OS → atividades, itens)
-- Transações ACID para operações críticas (movimentação de estoque + mudança de status)
-- Hibernate/JPA oferecem suporte de primeiro nível ao PostgreSQL
-- RDS elimina gerenciamento de backup, patching e replicação
-- `db.t3.micro` é elegível ao Free Tier da AWS
+**Justificativa (PostgreSQL):**
+- Modelo relacional com FK (OS → atividades → itens)
+- ACID para movimentação de estoque e histórico de status
+- RDS gerenciado e Free Tier (`db.t3.micro`)
+
+**Justificativa (DynamoDB no payment):**
+- Domínio de cobrança com padrões de acesso por chave (orçamento, pagamento, webhook)
+- Escala e custo previsível com `PAY_PER_REQUEST` em ambiente acadêmico
+- Desacoplamento do modelo relacional das OS (integração via Feign + SQS, não FK)
 
 **Alternativas consideradas:**
-- **MySQL (RDS)**: Viável, mas PostgreSQL tem melhor suporte a tipos complexos e herança de tabela
-- **DynamoDB**: Inadequado — o modelo possui relações N:N e queries complexas que demandam JOINs
-- **Banco compartilhado**: Viola o princípio de autonomia dos microserviços
+- **DynamoDB para tudo:** inadequado para joins e histórico relacional da OS
+- **Banco compartilhado:** viola database-per-service
 
 ---
 
@@ -593,7 +814,7 @@ erDiagram
 **Configuração:**
 - Todos os Ingresses compartilham `group.name: siaes-gateway`
 - Cada microserviço define seu `context_path` (`/customer-api`, `/order-api`, `/inventory-api`, `/payment-api`)
-- `group.order` define prioridade de roteamento (10, 20, 30)
+- `group.order` define prioridade de roteamento (10 customer, 20 order, 30 inventory, 40 payment)
 - Autenticação é feita dentro de cada microserviço via Spring Security
 
 **Consequências:**
@@ -634,9 +855,9 @@ erDiagram
 | Microserviço | Domínio | Persistência | Context Path |
 |---|---|---|---|
 | `customer-microservice` | Usuários, Veículos, Auth | RDS `siaes_customers` | `/customer-api` |
-| `order-microservice` | Ordens de Serviço, Atividades | RDS `siaes_orders` | `/order-api` |
+| `order-microservice` | Ordens de Serviço, saga orchestrator | RDS `siaes_orders` + SQS | `/order-api` |
 | `inventory-microservice` | Estoque, Peças, Mão de Obra | RDS `siaes_inventory` | `/inventory-api` |
-| `payment-microservice` | Orçamentos, Pagamentos | DynamoDB (ex.: `billing-table-{env}`) | `/payment-api` |
+| `payment-microservice` | Orçamentos, Pagamentos, webhook MP | DynamoDB `billing-table-{env}` + SQS | `/payment-api` |
 
 **Consequências:**
 - (+) Deploy independente — mudar o order não rebuilda o customer
@@ -644,7 +865,28 @@ erDiagram
 - (+) Database-per-service — isolamento total de dados
 - (+) CI/CD mais rápido — cada repo builda apenas o que é seu
 - (-) Complexidade de comunicação — OpenFeign com propagação de JWT
-- (-) Consistência eventual — sem transações distribuídas (aceitável para o domínio)
+- (-) Consistência eventual — sem transações distribuídas; mitigado por **saga orchestrator** no order (ver seção acima)
+
+---
+
+### ADR-007: Saga Orchestrator no order-microservice
+
+**Status:** Aceito
+
+**Contexto:** Aprovar uma OS envolve inventory (reserva de peças) e payment (orçamento/cobrança) em bancos distintos. Transações distribuídas (2PC) não são viáveis com database-per-service.
+
+**Decisão:** Orquestração centralizada no `order-microservice` via `ClientApprovalOrchestrationUseCase`, com compensações síncronas (Feign) e conclusão de pagamento assíncrona via SQS.
+
+**Consequências:**
+- (+) Fluxo e rollback explícitos, testáveis em um bounded context
+- (+) Mesma lógica para aprovação por colaborador e por token de cliente
+- (+) Payment desacoplado do webhook lento (SQS `payment-result`)
+- (-) O order concentra conhecimento dos contratos Feign de inventory e payment (acoplamento aceito como process manager)
+- (-) Compensações manuais exigem monitoramento se inventory/payment falharem após várias tentativas
+
+**Alternativas consideradas:**
+- **Coreografia pura (só eventos):** mais desacoplada, porém ordem “reservar antes de cobrar” e compensações ficam implícitas e difíceis de auditar
+- **2PC / transação global:** incompatível com autonomia dos microsserviços
 
 ---
 
@@ -657,12 +899,12 @@ erDiagram
 **Decisão:** Criar workflows reutilizáveis no repositório `github-action`, versionados com tags semânticas.
 
 **Workflows:**
-- `reusable-terraform-microservice.yml` — Terraform plan/apply com outputs de RDS e/ou DynamoDB (`dynamodb_table_name`)
-- `reusable-java-eks-deploy.yml` — Build Maven, push ECR, apply K8s manifests
+- `reusable-terraform-microservice.yml` — Terraform plan/apply; outputs RDS e `dynamodb_table_name`
+- `reusable-java-eks-deploy.yml` — Build Maven, push ECR, apply manifests do repo `k8s` (ConfigMap, Secret, Ingress, HPA)
 
 **Consequências:**
 - (+) Mudança em um workflow aplica a todos os microserviços na próxima versão
-- (+) Versionamento por tags (`v1.0.8`) permite rollback independente
+- (+) Versionamento por tags (`github-action@v1.0.10`, `terraform-modules@v1.2.0`) permite rollback independente
 - (+) Templates K8s centralizados no repositório `k8s`
 - (-) Requer bump de tag e atualização em cada repo para adotar mudanças
 
