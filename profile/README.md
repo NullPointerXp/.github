@@ -225,6 +225,126 @@ Requisições **assíncronas** (mensageria):
 | **Produção** | `main` | Ambiente principal com alta disponibilidade |
 | **Staging** | `stg` | Ambiente de homologação com custos reduzidos |
 
+### Visão do CI/CD e repositórios reutilizáveis
+
+A infraestrutura e o deploy **não vivem num único monorepo**. Cada microsserviço tem o seu código e a pasta `infra/`, mas **módulos Terraform**, **workflows GitHub Actions** e **manifests Kubernetes** são centralizados e versionados por tag.
+
+#### Repositórios e o que cada um guarda
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│  Repositórios da organização (NullPointerXp)                                           │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                         │
+│  terraform-modules@v1.2.0          github-action@v1.0.10           k8s (branch main)    │
+│  ┌──────────────────────┐          ┌──────────────────────┐        ┌─────────────────┐  │
+│  │ vpc/  eks/  ecr/     │          │ reusable-terraform-  │        │ templates/      │  │
+│  │ rds/  sqs/ dynamodb/ │          │   microservice.yml   │        │  deployment     │  │
+│  │ … (módulos HCL)      │          │ reusable-java-eks-   │        │  service        │  │
+│  └──────────┬───────────┘          │   deploy.yml         │        │  ingress        │  │
+│             │ git::…?ref=v1.2.0    └──────────┬───────────┘        │  configmap      │  │
+│             │ (source nos .tf)                │ uses: …@v1.0.10    │  hpa, secrets   │  │
+│             │                                 │ (chamado pelos     └────────┬────────┘  │
+│             │                                 │  workflows dos MS)            │ checkout  │
+│             ▼                                 ▼                               │ envsubst  │
+│  ┌──────────────────────┐          ┌──────────────────────┐                  │           │
+│  │ infra-app            │          │ *-microservice       │◄─────────────────┘           │
+│  │ environments/        │          │ .github/workflows/   │                              │
+│  │   stg/  prod/        │          │   cicd-stg.yml       │                              │
+│  │ → VPC, EKS, Helm     │          │   cicd-prod.yml      │                              │
+│  │   (consome vpc+eks)  │          │ infra/environments/  │                              │
+│  └──────────┬───────────┘          │   stg/  prod/        │                              │
+│             │ remote state S3       │ → ECR, RDS/Dynamo,   │                              │
+│             │ (outputs: vpc,        │   SQS (por serviço)  │                              │
+│             │  cluster, subnets)   │   (consome ecr,rds…) │                              │
+│             └──────────────────────►│   lê remote state    │                              │
+│                                     │   do infra-app       │                              │
+│                                     └──────────────────────┘                              │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+
+         Estado Terraform (S3 bucket tf-state-backend-siaes)
+         ┌────────────────────────────────────────────────────────────┐
+         │  key: siaes/{stg|prod}/terraform.tfstate     ← infra-app   │
+         │  key: …/customer-microservice/…              ← cada MS       │
+         │  key: …/order-microservice/…                 ← cada MS       │
+         └────────────────────────────────────────────────────────────┘
+```
+
+| Peça reutilizável | Onde vive | Quem consome | Pin de versão |
+|---|---|---|---|
+| Módulos Terraform (`vpc`, `eks`, `ecr`, `rds`, `sqs`, `dynamodb`, …) | `terraform-modules` | `infra-app` e `infra/environments/*` de cada MS | `?ref=v1.2.0` no `source` |
+| Workflow Terraform (plan/apply) | `github-action` | `infra-app` e microsserviços | `@v1.0.10` |
+| Workflow Java + EKS (build, push, kubectl) | `github-action` | Microsserviços (após Terraform) | `@v1.0.10` |
+| Manifests K8s (templates YAML) | `k8s` | Job de deploy do `github-action` | branch `main` (+ `INFRA_CHECKOUT_TOKEN`) |
+
+#### Fluxo de deploy em um microsserviço (push na branch)
+
+Cada repositório de serviço expõe dois jobs encadeados (`needs: terraform` → `deploy`). O **infra-app** segue o mesmo padrão de Terraform reutilizável, mas **sem** job de build/deploy de aplicação.
+
+```
+  desenvolvedor
+       │
+       │  git push  (stg  ou  main)
+       ▼
+┌──────────────────┐     ┌─────────────────────────────────────────────────────────────┐
+│ *-microservice     │     │  Job 1: terraform  (reusable-terraform-microservice.yml)    │
+│ cicd-stg.yml       │────>│  · checkout do repo do MS                                   │
+│ cicd-prod.yml      │     │  · terraform init  (clona terraform-modules via PAT)        │
+└──────────────────┘     │  · working_directory: infra/environments/{stg|prod}           │
+                           │  · lê remote state do infra-app (VPC, EKS, subnets, SG)     │
+                           │  · apply: ECR, RDS ou DynamoDB, SQS (conforme o serviço)    │
+                           │  · grava state próprio no S3                                  │
+                           │  · outputs → rds_address, dynamodb_table_name, …            │
+                           └────────────────────────────┬────────────────────────────────┘
+                                                        │ needs: terraform (sucesso)
+                                                        ▼
+                           ┌─────────────────────────────────────────────────────────────┐
+                           │  Job 2: deploy  (reusable-java-eks-deploy.yml)              │
+                           │  · mvn test + package                                       │
+                           │  · docker build + push → ECR {service}-microservice-{env}   │
+                           │  · checkout repo k8s → envsubst em templates/                │
+                           │  · injeta URL do RDS, context_path, secrets (GitHub Secrets)  │
+                           │  · kubectl apply no siaes-cluster-{stg|prod}                  │
+                           │  · Ingress group siaes-gateway → ALB internet-facing        │
+                           │  · (prod) SonarCloud + Secret Datadog                         │
+                           └────────────────────────────┬────────────────────────────────┘
+                                                        ▼
+                                              Pods no EKS · tráfego pelo ALB
+```
+
+**infra-app** (só plataforma — sem imagem Java):
+
+```
+  push em environments/stg/** ou environments/prod/**
+       │
+       ▼
+  reusable-terraform-microservice.yml  →  apply VPC + EKS + Helm (ALB Controller, Datadog em prod)
+       │
+       └── outputs no S3  ──►  microsserviços usam data "terraform_remote_state" "infra_app"
+```
+
+#### Pastas típicas por repositório
+
+```
+terraform-modules/          github-action/                 k8s/
+├── vpc/                    └── .github/workflows/         └── templates/
+├── eks/                        reusable-terraform-            deployment.yaml
+├── ecr/                        microservice.yml               ingress.yaml  (group: siaes-gateway)
+├── rds/                        reusable-java-eks-deploy.yml   configmap.yaml, hpa.yaml, …
+├── sqs/                                                           secrets/*.yaml (placeholders)
+└── dynamodb/
+
+infra-app/                  order-microservice/  (exemplo)
+├── environments/           ├── src/                    ← código Spring Boot
+│   ├── stg/main.tf         ├── .github/workflows/
+│   └── prod/main.tf        │     cicd-stg.yml  ──uses──► github-action@v1.0.10
+└── .github/workflows/      └── infra/environments/
+    terraform-stg.yml           ├── stg/main.tf   ──module──► terraform-modules@v1.2.0
+                                └── prod/main.tf  ──remote state──► infra-app (S3)
+```
+
+> **Por que tags (`v1.0.10`, `v1.2.0`)?** Mudanças em `main` dos repos compartilhados não quebram pipelines em produção até cada consumidor atualizar o pin. Rollback = voltar a tag anterior nos workflows ou no `ref` dos módulos.
+
 ## Ordem de Deploy (do zero)
 
 ```
