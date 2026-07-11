@@ -117,7 +117,7 @@ graph TB
                         PP["KEDA 0–10 réplicas<br/>:8084"]
                     end
 
-                    subgraph notification-pod["notification-service (em desenvolvimento)"]
+                    subgraph notification-pod["notification-service"]
                         NS["consome notification-queue<br/>:8083"]
                     end
                 end
@@ -208,7 +208,7 @@ graph TB
           ▼                    ▼
 ┌─────────────────┐   ┌───────────────────────────────┐
 │  video-service  │   │  notification-service (:8083) │
-│  · atualiza DB  │   │  (em desenvolvimento)         │
+│  · atualiza DB  │   │                               │
 │    status /     │   │  · consome fila               │
 │    frameCount   │   │  · envia e-mail via AWS SES   │
 │    outputKey    │   │    com link de download       │
@@ -314,7 +314,7 @@ Worker Python que consome `video-processing-queue`, processa o vídeo com ffmpeg
 
 ---
 
-### notification-service (:8083) — em desenvolvimento
+### notification-service (:8083)
 
 Consome a fila `notification-queue` e envia e-mail via AWS SES informando o link de download do ZIP ou a mensagem de erro do processamento.
 
@@ -334,7 +334,7 @@ graph LR
     Auth["auth-service"]
     Video["video-service"]
     Processor["video-processor-service"]
-    Notif["notification-service<br/>(em desenvolvimento)"]
+    Notif["notification-service<br/>"]
 
     Video -->|"SQS video-processing-queue"| Processor
     Processor -->|"SQS video-status-queue"| Video
@@ -490,7 +490,7 @@ A infraestrutura e o deploy seguem o **mesmo padrão do SIAES**: módulos Terraf
 2. auth-microservice              →  Terraform (ECR + RDS fiapx_auth) + deploy EKS
 3. video-microservice             →  Terraform (ECR + RDS fiapx_videos) + deploy EKS
 4. video-processor-microservice   →  Terraform (ECR + IAM IRSA) + deploy EKS + KEDA ScaledObject
-5. notification-service           →  Terraform (ECR + SES identity) + deploy EKS   ← em desenvolvimento
+5. notification-service           →  Terraform (ECR + SES identity) + deploy EKS 
 ```
 
 Cada serviço lê o **remote state** do `infra-app` (VPC, subnets, security group dos nodes). O ALB `fiapx-gateway` nasce no primeiro Ingress aplicado (auth ou video service).
