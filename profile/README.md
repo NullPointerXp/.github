@@ -12,6 +12,8 @@ O **FIAP X** é uma plataforma para upload, processamento assíncrono e distribu
 
 ## Arquitetura
 
+![Arquitetura AWS do SIAES](./arch-4.svg)
+
 ### Visão da Infraestrutura AWS
 
 ```
