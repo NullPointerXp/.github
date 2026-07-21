@@ -1093,6 +1093,28 @@ Cada repositório de serviço expõe dois jobs encadeados (`needs: terraform` �
        └── outputs no S3  ──►  microsserviços usam data "terraform_remote_state" "infra_app"
 ```
 
+#### Notificação automática do Datadog (infra-app → k8s)
+
+Depois que o Terraform do `infra-app` sobe o `datadog-operator` via Helm, um job dispara um evento `repository_dispatch` no repo `k8s` para aplicar o `DatadogAgent` — evita esquecer esse passo manualmente após cada deploy de infra.
+
+```
+infra-app (terraform-prod.yml)                       k8s (deploy-datadog.yml)
+┌───────────────────────────────┐                     ┌──────────────────────────────────┐
+│ Job: terraform                 │                     │ on:                              │
+│  · helm_release.datadog_       │                     │   workflow_dispatch              │
+│    operator (Helm)             │                     │   push: prod/datadog/**          │
+│                                │                     │   repository_dispatch:           │
+│ Job: notify-k8s-datadog        │   gh api repos/…/    │     types: [infra-app-deployed]  │
+│  · gh api repos/…/k8s/         │──dispatches─────────>│                                  │
+│    dispatches                  │   event_type=        │  · aws eks update-kubeconfig     │
+│  · event_type:                 │   infra-app-deployed │  · valida datadog-operator no ns │
+│    infra-app-deployed          │                     │  · apply datadog-secret.yaml     │
+│                                │                     │  · apply prod/datadog/ (DatadogAgent)│
+└───────────────────────────────┘                     └──────────────────────────────────┘
+```
+
+**Arquivos:** job `notify-k8s-datadog` em `infra-app/.github/workflows/terraform-prod.yml` → workflow `k8s/.github/workflows/deploy-datadog.yml`.
+
 #### Pastas típicas por repositório
 
 ```
